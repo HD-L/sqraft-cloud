@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  # 复用 sqraft 仓库（git submodule，锁定到发布 tag）里的纯 TypeScript 包
+  - vendor/sqraft/packages/core
+  - vendor/sqraft/packages/ai-tools
+  - vendor/sqraft/packages/render
+
+onlyBuiltDependencies:
+  - better-sqlite3
+  - esbuild

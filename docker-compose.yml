@@ -1,0 +1,40 @@
+# 用法：
+#   1. 复制 .env.example 为 .env，填好管理员密码与域名
+#   2. docker compose up -d                    # 服务监听 8080，自己的反向代理负责 HTTPS
+#      docker compose --profile https up -d    # 额外启动 Caddy，自动申请 Let's Encrypt 证书
+services:
+  sqraft-cloud:
+    build: .
+    image: sqraft-cloud:latest
+    restart: unless-stopped
+    ports:
+      - "${SQRAFT_BIND:-127.0.0.1}:8080:8080"
+    environment:
+      SQRAFT_ADMIN_USER: ${SQRAFT_ADMIN_USER:-admin}
+      SQRAFT_ADMIN_PASSWORD: ${SQRAFT_ADMIN_PASSWORD:?请在 .env 里设置 SQRAFT_ADMIN_PASSWORD}
+      SQRAFT_PUBLIC_URL: ${SQRAFT_PUBLIC_URL:-}
+      # 在反向代理（Caddy / Nginx）后面时开启，才能识别 HTTPS 与真实客户端 IP
+      SQRAFT_TRUST_PROXY: ${SQRAFT_TRUST_PROXY:-1}
+      # 仅限可信内网：允许纯 HTTP 访问
+      SQRAFT_INSECURE_HTTP: ${SQRAFT_INSECURE_HTTP:-0}
+      SQRAFT_MAX_UPLOAD_MB: ${SQRAFT_MAX_UPLOAD_MB:-2048}
+    volumes:
+      - ./data:/data
+
+  caddy:
+    profiles: ["https"]
+    image: caddy:2.8.4
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SQRAFT_DOMAIN: ${SQRAFT_DOMAIN:?请在 .env 里设置 SQRAFT_DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - sqraft-cloud
+
+volumes:
+  caddy-data:

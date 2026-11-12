@@ -1,0 +1,16 @@
+{
+  "name": "sqraft-cloud",
+  "private": true,
+  "description": "Sqraft 私有云：设计稿托管、账号权限、只读 MCP，可 Docker 部署",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @sqraft-cloud/server dev",
+    "build": "pnpm --filter @sqraft-cloud/server build",
+    "test": "pnpm --filter @sqraft-cloud/server test",
+    "typecheck": "pnpm --filter @sqraft-cloud/server typecheck"
+  }
+}

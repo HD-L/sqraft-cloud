@@ -1,0 +1,7 @@
+{$SQRAFT_DOMAIN} {
+	# 设计稿上传是分块的（每块 8 MB），这里放宽到 64 MB
+	request_body {
+		max_size 64MB
+	}
+	reverse_proxy sqraft-cloud:8080
+}

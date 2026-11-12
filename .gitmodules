@@ -1,0 +1,3 @@
+[submodule "vendor/sqraft"]
+	path = vendor/sqraft
+	url = https://github.com/wfdx165/sqraft.git

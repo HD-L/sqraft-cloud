@@ -1,0 +1,118 @@
+# Sqraft 私有云（sqraft-cloud）
+
+把 [Sqraft](https://github.com/wfdx165/sqraft) 设计稿托管在自己的服务器上：设计师用 Mac 上传客户端发布 `.sqraft`，
+开发者在网页上查看，或让 AI 编码助手通过 MCP 直接读取布局、Token 和切图——不用再互传文件。
+
+纯单机部署：一个 Node.js 服务 + 一个 SQLite 数据库 + 一个数据目录，`docker compose up` 即可。以 Apache-2.0 开源。
+
+## 当前进度
+
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| 1. 服务端基础 | 账号、会话、令牌、项目权限、分块上传与版本、审计日志 | ✅ 已完成（本仓库） |
+| 2. 只读 MCP + 网页查看 | 按页索引、MCP 只读工具、网页画布 | 待开发 |
+| 3. Mac 上传客户端 | 浏览器登录（OAuth + PKCE）、选项目与设计稿上传 | 待开发 |
+| 4. 部署与试点 | 镜像发布、备份恢复、部署文档 | 部分完成（Dockerfile / compose） |
+
+## 部署
+
+### Docker Compose（推荐）
+
+```bash
+git clone --recurse-submodules <本仓库地址> sqraft-cloud && cd sqraft-cloud
+cp .env.example .env          # 填好管理员密码与域名
+docker compose --profile https up -d   # 自带 Caddy，自动申请 HTTPS 证书
+```
+
+已有自己的反向代理（Nginx 等）时去掉 `--profile https`，把代理指向 `127.0.0.1:8080`，并保持 `SQRAFT_TRUST_PROXY=1`。
+数据全部在 `./data` 目录：SQLite 数据库、设计稿文件仓库、上传临时文件。**备份就是拷贝这个目录**（建议先停服务，或用 `sqlite3 data/sqraft-cloud.db ".backup x.db"`）。
+
+### 从源码构建
+
+需要 Node.js 22.12+ 与 pnpm 10。
+
+```bash
+git submodule update --init
+pnpm install
+pnpm build                    # 产出 apps/server/dist/server.mjs
+SQRAFT_ADMIN_USER=admin SQRAFT_ADMIN_PASSWORD='至少8位' SQRAFT_INSECURE_HTTP=1 node apps/server/dist/server.mjs
+```
+
+开发时 `pnpm dev` 热重载；`pnpm test` 跑测试；`pnpm typecheck` 做类型检查。
+
+## 配置（环境变量）
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `SQRAFT_DATA_DIR` | `./data`（镜像里是 `/data`） | 数据目录 |
+| `SQRAFT_HOST` / `SQRAFT_PORT` | `0.0.0.0` / `8080` | 监听地址与端口 |
+| `SQRAFT_ADMIN_USER` / `SQRAFT_ADMIN_PASSWORD` | 无 | 没有任何管理员时，启动时创建这个管理员 |
+| `SQRAFT_PUBLIC_URL` | 无 | 对外访问地址，用于生成链接 |
+| `SQRAFT_TRUST_PROXY` | `0` | 在反向代理后面时设为 `1`，识别 HTTPS 与客户端真实 IP |
+| `SQRAFT_INSECURE_HTTP` | `0` | **仅限可信内网**：允许纯 HTTP。关闭时非 HTTPS 请求一律拒绝（健康检查除外） |
+| `SQRAFT_MAX_UPLOAD_MB` | `2048` | 单个设计稿上限 |
+| `SQRAFT_SESSION_DAYS` | `7` | 网页会话有效期 |
+| `SQRAFT_TOKEN_MAX_DAYS` | `0`（不限） | 令牌最长有效期；设置后不再允许「不过期」令牌 |
+| `SQRAFT_AUDIT_DAYS` | `180` | 审计日志保留天数 |
+| `SQRAFT_LOG_LEVEL` | `info` | 日志级别（JSON 格式输出到标准输出，凭据已脱敏） |
+
+## 接口一览（`/api/v1`）
+
+所有错误返回 `{ "error": { "code", "message" } }`。网页会话的写请求需带 `X-CSRF-Token`（登录或 `GET /me` 时返回）；
+令牌用 `Authorization: Bearer sqr_…`。没有权限看到的资源一律返回 404。
+
+| 方法与路径 | 说明 | 权限 |
+|---|---|---|
+| `GET /info` | 服务名、版本、API 版本、支持的 `.sqraft` 格式版本 | 公开 |
+| `POST /auth/login`、`POST /auth/logout` | 登录（连续 5 次错误锁定 15 分钟）/ 登出 | 公开 |
+| `GET /me`、`POST /me/password` | 当前用户；改密码（首次登录必须先改） | 登录 |
+| `GET/POST /tokens`、`DELETE /tokens/:id` | 令牌：用途 `mcp`（只读）或 `uploader`（可上传），可限定项目，明文只返回一次 | 网页会话 |
+| `GET /projects`、`GET /projects/:id/designs` | 自己有权限的项目与设计稿 | 登录 |
+| `POST /projects/:id/designs` | 新建设计稿 | 编辑者 |
+| `GET/PATCH/DELETE /designs/:id` | 查看 / 改名 / 删除（进回收站） | 查看者 / 编辑者 |
+| `GET /designs/:id/versions`、`POST /designs/:id/rollback` | 版本历史；回滚当前版本 | 查看者 / 编辑者 |
+| `POST /designs/:id/uploads` → `PUT /uploads/:id` → `POST /uploads/:id/complete` | 分块、可续传上传（头 `Upload-Offset`，每块 ≤ 64 MB） | 编辑者 |
+| `/admin/users`、`/admin/projects`、`/admin/projects/:id/members/:userId` | 用户、项目、成员管理 | 系统管理员 |
+| `GET /admin/audit?user=&action=&from=&to=&format=csv` | 审计日志查询与 CSV 导出 | 系统管理员 |
+
+### 上传流程
+
+```bash
+# 1. 开始：声明文件大小与版本说明
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"size": 433331003, "note": "首页改版"}' $HOST/api/v1/designs/$DESIGN/uploads
+# 2. 逐块上传（建议 8 MB 一块）；偏移对不上时返回 409 与服务端已收字节数，按它续传
+curl -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/octet-stream' \
+     -H "Upload-Offset: 0" --data-binary @chunk0 $HOST/api/v1/uploads/$UPLOAD
+# 3. 提交：校验 .sqraft、收录、生成新版本；与当前版本内容相同则不新建版本（duplicate: true）
+curl -X POST -H "Authorization: Bearer $TOKEN" $HOST/api/v1/uploads/$UPLOAD/complete
+```
+
+上传的 `.sqraft` 会做这些检查：zip 条目白名单（拒绝路径穿越与未知文件）、单条目与总大小上限、压缩比上限、
+`doc.json` 结构与节点数上限、格式版本不高于服务端支持的版本。切图按内容哈希只存一份，多个版本共用。
+
+## 代码结构
+
+```
+apps/server/            Node.js 服务（Fastify + better-sqlite3）
+  src/app.ts            组装应用：凭据解析、CSRF、HTTPS 强制、安全响应头、错误格式
+  src/auth.ts           会话 / 令牌 / 项目权限
+  src/sqraft-file.ts    .sqraft 校验与收录
+  src/storage.ts        内容寻址文件仓库
+  src/routes/           各组接口
+  test/                 vitest 接口测试
+vendor/sqraft/          sqraft 仓库（git submodule，锁定发布 tag），复用 @sqraft/core 等
+deploy/Caddyfile        自动 HTTPS 的反向代理配置
+```
+
+升级依赖的 sqraft 版本：`cd vendor/sqraft && git fetch --tags && git checkout vX.Y.Z`，回到仓库根目录提交子模块指针。
+
+## 已知限制（后续里程碑处理）
+
+- `doc.json` 以原样存储，未压缩；大稿收录时整份解析，内存峰值约为 doc.json 大小的 6 倍。
+- 上传校验失败时已写入仓库的文件不会立即清理（不影响正确性，后续加垃圾回收）。
+- 回收站 30 天自动清理、管理员彻底删除尚未实现。
+
+## 许可证
+
+[Apache-2.0](LICENSE)
