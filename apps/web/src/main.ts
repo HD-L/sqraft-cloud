@@ -13,6 +13,7 @@ const router = createRouter({
     { path: "/projects/:id", component: () => import("./views/Project.vue"), props: true },
     { path: "/designs/:id", component: () => import("./views/Design.vue"), props: true },
     { path: "/tokens", component: () => import("./views/Tokens.vue") },
+    { path: "/oauth/authorize", component: () => import("./views/Authorize.vue"), meta: { bare: true } },
     { path: "/admin/users", component: () => import("./views/admin/Users.vue"), meta: { admin: true } },
     { path: "/admin/projects", component: () => import("./views/admin/Projects.vue"), meta: { admin: true } },
     { path: "/admin/audit", component: () => import("./views/admin/Audit.vue"), meta: { admin: true } },
@@ -24,7 +25,7 @@ router.beforeEach(async (to) => {
   if (!session.loaded) await loadSession();
   if (to.meta.public) return session.user && to.path === "/login" ? "/" : true;
   if (!session.user) return { path: "/login", query: { next: to.fullPath } };
-  if (session.user.mustChangePassword && to.path !== "/password") return "/password";
+  if (session.user.mustChangePassword && to.path !== "/password") return { path: "/password", query: { next: to.fullPath } };
   if (to.meta.admin && !session.user.isAdmin) return "/";
   return true;
 });

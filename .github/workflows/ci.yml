@@ -17,6 +17,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+        env:
+          # CI 只做类型检查，不需要下载 Electron 二进制
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build

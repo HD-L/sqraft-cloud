@@ -5,7 +5,7 @@ import { logout, session } from "./api";
 
 const route = useRoute();
 const router = useRouter();
-const showNav = computed(() => session.user && !route.meta.public);
+const showNav = computed(() => session.user && !route.meta.public && !route.meta.bare);
 
 async function signOut() {
   await logout();

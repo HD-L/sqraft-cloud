@@ -1,0 +1,30 @@
+appId: com.sqraft.cloud.uploader
+productName: Sqraft 上传
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**/*
+  - "!out/**/*.map"
+  - package.json
+asar: true
+npmRebuild: false
+electronDist: node_modules/electron/dist
+# 浏览器登录完成后跳回客户端用的自定义协议（Info.plist 的 CFBundleURLTypes 由它生成）
+protocols:
+  - name: Sqraft 上传
+    schemes:
+      - sqraft-uploader
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  # 没有 Developer ID 证书时为 null：生成未签名的包（首次打开需在「系统设置 → 隐私与安全性」里放行）
+  identity: null
+# 不接入自动更新发布源（MVP 手动分发 DMG）
+publish: []

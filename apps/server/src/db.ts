@@ -123,6 +123,18 @@ const MIGRATIONS: string[] = [
   ALTER TABLE versions ADD COLUMN index_blob TEXT;
   CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `,
+  // 里程碑 3：上传客户端的浏览器登录（OAuth 2.0 授权码 + PKCE）
+  `
+  CREATE TABLE oauth_codes (
+    code_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

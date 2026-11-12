@@ -11,7 +11,7 @@
 |---|---|---|
 | 1. 服务端基础 | 账号、会话、令牌、项目权限、分块上传与版本、审计日志 | ✅ 已完成 |
 | 2. 只读 MCP + 网页查看 | 按页索引、11 个 MCP 只读工具、网页看稿与管理后台 | ✅ 已完成 |
-| 3. Mac 上传客户端 | 浏览器登录（OAuth + PKCE）、选项目与设计稿上传 | 待开发 |
+| 3. Mac 上传客户端 | 浏览器登录（OAuth 授权码 + PKCE）、选项目与设计稿上传（Electron） | ✅ 已完成 |
 | 4. 部署与试点 | 镜像发布、备份恢复、部署文档 | 部分完成（Dockerfile / compose） |
 
 ## 部署
@@ -70,6 +70,26 @@ SQRAFT_ADMIN_USER=admin SQRAFT_ADMIN_PASSWORD='至少8位' SQRAFT_INSECURE_HTTP=
 - **MCP 接入**：创建令牌，复制 Claude Code / Cursor / VS Code 的配置。
 - **管理后台**（系统管理员）：用户、项目与成员、审计日志（可导出 CSV）。
 
+## Mac 上传客户端（apps/uploader）
+
+设计师用的桌面客户端（Electron，Apple Silicon）：
+
+1. 填私有云地址（会先请求 `/api/v1/info` 确认是 Sqraft 私有云且版本兼容）；
+2. 点「在浏览器中登录」：浏览器打开私有云授权页，登录并点「授权」后跳回客户端（`sqraft-uploader://` 协议）。
+   全程是 OAuth 2.0 授权码 + PKCE，客户端不接触密码；换到的是 uploader 用途的令牌，默认 90 天；
+3. 拖入或选择 `.sqraft`（`.sketch` 会提示先用 sketch2sqraft 转换），选项目与设计稿（或新建），填版本说明，上传。
+   分块上传、可取消；完成后可复制设计稿链接、在浏览器打开。
+
+客户端记住「本地文件 ↔ 云端设计稿」，同一个文件下次自动预选；云端已有别人发布的更新版本时会提醒。
+令牌只在主进程里使用，用 Electron safeStorage（macOS 钥匙串保护的密钥）加密保存，渲染层拿不到。退出登录会吊销令牌。
+
+```bash
+pnpm dev:uploader     # 开发
+pnpm dist:uploader    # 打包 apps/uploader/release/Sqraft 上传-<版本>-arm64.dmg
+```
+
+没有 Apple Developer ID 证书时打出的是未签名包：首次打开需在「系统设置 → 隐私与安全性」里点「仍要打开」。
+
 ## MCP（给 AI 编码助手）
 
 端点 `POST /mcp`（Streamable HTTP），用 `Authorization: Bearer sqr_…` 鉴权，只提供只读工具：
@@ -114,6 +134,8 @@ claude mcp add --transport http sqraft https://design.example.com/mcp --header "
 | `GET /admin/audit?user=&action=&from=&to=&format=csv` | 审计日志查询与 CSV 导出 | 系统管理员 |
 | `GET /designs/:id/versions/:v/pages`、`…/pages/:pageId` | 页面列表；单页节点（`:v` 为版本号或 `current`） | 查看者 |
 | `GET /designs/:id/versions/:v/components`、`…/tokens`、`…/assets/:assetId` | 组件、Token、切图 | 查看者 |
+| `GET /oauth/authorize`（网页）→ `POST /oauth/token` | 上传客户端浏览器登录：授权码 + PKCE（S256），授权码 60 秒、只能用一次 | 公开 / 网页会话 |
+| `POST /api/v1/oauth/revoke` | 令牌吊销自己（客户端退出登录） | 令牌 |
 
 ### 上传流程
 
@@ -135,6 +157,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" $HOST/api/v1/uploads/$UPLOAD/comp
 
 ```
 apps/web/               网页（Vue 3 + Vite），画布复用 @sqraft/render
+apps/uploader/          Mac 上传客户端（Electron + Vue 3）
 apps/server/            Node.js 服务（Fastify + better-sqlite3）
   src/indexer.ts        上传时按页拆分 doc.json、建搜索索引
   src/reader.ts         设计稿读取（版本解析、按页加载、LRU 缓存、切图签名）

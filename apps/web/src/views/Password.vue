@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { api, loadSession, session } from "../api";
 
 const router = useRouter();
+const route = useRoute();
 const current = ref("");
 const next = ref("");
 const confirm = ref("");
@@ -21,7 +22,10 @@ async function submit() {
     done.value = true;
     const first = session.user?.mustChangePassword;
     await loadSession();
-    if (first) await router.replace("/");
+    if (first) {
+      const target = typeof route.query.next === "string" && route.query.next.startsWith("/") ? route.query.next : "/";
+      await router.replace(target);
+    }
   } catch (e) {
     error.value = (e as Error).message;
   }

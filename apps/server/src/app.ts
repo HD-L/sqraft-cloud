@@ -20,6 +20,7 @@ import { adminRoutes } from "./routes/admin";
 import { projectRoutes } from "./routes/projects";
 import { uploadRoutes } from "./routes/uploads";
 import { readRoutes } from "./routes/read";
+import { oauthRoutes } from "./routes/oauth";
 import { mcpRoutes } from "./mcp/server";
 import { webRoutes } from "./web";
 import { DesignReader } from "./reader";
@@ -113,6 +114,7 @@ export async function buildApp(
   adminRoutes(app, ctx);
   projectRoutes(app, ctx);
   uploadRoutes(app, ctx);
+  oauthRoutes(app, ctx);
   const reader = new DesignReader(ctx);
   readRoutes(app, ctx, reader);
   mcpRoutes(app, ctx, reader);
