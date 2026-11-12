@@ -11,7 +11,7 @@
     "dev": "pnpm --filter @sqraft-cloud/server dev",
     "dev:web": "pnpm --filter @sqraft-cloud/web dev",
     "build": "pnpm --filter @sqraft-cloud/web build && pnpm --filter @sqraft-cloud/server build",
-    "test": "pnpm --filter @sqraft-cloud/server test",
+    "test": "pnpm --filter @sqraft-cloud/server test && pnpm --filter @sqraft-cloud/web test",
     "typecheck": "pnpm --filter @sqraft-cloud/server typecheck && pnpm --filter @sqraft-cloud/web typecheck && pnpm --filter @sqraft-cloud/uploader typecheck",
     "dev:uploader": "pnpm --filter @sqraft-cloud/uploader dev",
     "dist:uploader": "pnpm --filter @sqraft-cloud/uploader dist"

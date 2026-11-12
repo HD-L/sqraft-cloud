@@ -136,6 +136,14 @@ function projectCard(db: Db, row: ProjectRow, role: string) {
   const stat = db
     .prepare("SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM designs WHERE project_id = ? AND deleted_at IS NULL")
     .get(row.id) as { n: number; t: number | null };
+  // 封面：最近更新的几份已上传的设计稿，网页用它们的第一个画板拼项目卡片的封面
+  const covers = (
+    db
+      .prepare(
+        "SELECT id, current_version AS v FROM designs WHERE project_id = ? AND deleted_at IS NULL AND current_version IS NOT NULL ORDER BY updated_at DESC LIMIT 3",
+      )
+      .all(row.id) as Array<{ id: string; v: number }>
+  ).map((d) => ({ designId: d.id, version: d.v }));
   return {
     id: row.id,
     name: row.name,
@@ -145,6 +153,7 @@ function projectCard(db: Db, row: ProjectRow, role: string) {
     createdBy: userName(db, row.created_by),
     createdByMe: undefined as boolean | undefined,
     designCount: stat.n,
+    covers,
     updatedAt: Math.max(stat.t ?? 0, row.created_at),
     createdAt: row.created_at,
   };
