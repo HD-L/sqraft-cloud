@@ -164,6 +164,11 @@ export async function ingestSqraft(file: string, store: BlobStore, limits: Inges
       }
       const tmp = store.tmpPath();
       const [blob, bytes] = await extractEntry(zip, entry, tmp, limits.maxEntryBytes);
+      // ops.ndjson 是编辑操作日志，读稿用不到：校验能解压即可，不进文件仓库
+      if (name === "ops.ndjson") {
+        await rm(tmp, { force: true });
+        continue;
+      }
       await store.adopt(tmp, blob);
       adopted.push({ name, blob, size: bytes });
     }

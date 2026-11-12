@@ -36,7 +36,7 @@ describe("分块上传与版本", () => {
     const v2 = makeSqraft({ title: "v2", assets: { "assets/aaaa1111.png": png } });
     const second = await upload(api, designId, v2, "改了标题");
     expect(second.json()).toMatchObject({ duplicate: false, version: { number: 2 } });
-    // 同一张切图只存一份：v2 只多了 doc.json、拆出的页面、搜索索引与版本索引（manifest、ops、切图都复用）
+    // 同一张切图只存一份：v2 只多了 doc.json、拆出的页面、搜索索引与版本索引（manifest、切图都复用）
     expect(await blobCount()).toBe(blobsBefore + 4);
 
     const versions = (await api.get(`/api/v1/designs/${designId}/versions`)).json().versions;

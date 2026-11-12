@@ -22,6 +22,7 @@ async function signOut() {
       <RouterLink to="/admin/users">用户</RouterLink>
       <RouterLink to="/admin/projects">项目管理</RouterLink>
       <RouterLink to="/admin/audit">审计日志</RouterLink>
+      <RouterLink to="/admin/system">系统</RouterLink>
     </template>
     <span class="spacer" />
     <RouterLink to="/password" class="muted">{{ session.user?.username }}</RouterLink>

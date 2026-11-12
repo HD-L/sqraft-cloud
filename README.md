@@ -12,9 +12,12 @@
 | 1. 服务端基础 | 账号、会话、令牌、项目权限、分块上传与版本、审计日志 | ✅ 已完成 |
 | 2. 只读 MCP + 网页查看 | 按页索引、11 个 MCP 只读工具、网页看稿与管理后台 | ✅ 已完成 |
 | 3. Mac 上传客户端 | 浏览器登录（OAuth 授权码 + PKCE）、选项目与设计稿上传（Electron） | ✅ 已完成 |
-| 4. 部署与试点 | 镜像发布、备份恢复、部署文档 | 部分完成（Dockerfile / compose） |
+| 4. 部署与试点 | 镜像发布、备份恢复、维护与监控、部署文档、试点计划 | ✅ 已完成（试点待开展） |
 
 ## 部署
+
+完整步骤见 **[部署手册](docs/deploy.md)**（HTTPS、升级、备份恢复、监控、安全检查清单、常见问题），
+试点安排见 **[试点计划](docs/pilot.md)**。
 
 ### Docker Compose（推荐）
 
@@ -57,7 +60,20 @@ SQRAFT_ADMIN_USER=admin SQRAFT_ADMIN_PASSWORD='至少8位' SQRAFT_INSECURE_HTTP=
 | `SQRAFT_AUDIT_DAYS` | `180` | 审计日志保留天数 |
 | `SQRAFT_MCP_RATE` | `60` | 每个令牌每分钟最多的 MCP 工具调用次数 |
 | `SQRAFT_WEB_DIR` | 自动 | 网页构建产物目录（镜像里是 `/app/web`） |
+| `SQRAFT_TRASH_DAYS` | `30` | 回收站保留天数，过期自动彻底删除 |
+| `SQRAFT_METRICS_TOKEN` | 无 | 设置后开放 Prometheus `/metrics`（Bearer 令牌访问） |
 | `SQRAFT_LOG_LEVEL` | `info` | 日志级别（JSON 格式输出到标准输出，凭据已脱敏） |
+
+## 运维命令
+
+```bash
+node server.mjs backup [--out <file>]    # 在线备份为 .tar.gz（默认 <数据目录>/backups/）
+node server.mjs restore <file> [--force] # 恢复（需先停服务；--force 时原目录改名保留）
+node server.mjs gc                       # 立即维护：清理回收站、回收孤儿文件与临时文件
+```
+
+Docker 里：`docker compose exec -u node sqraft-cloud node server.mjs backup`。服务每天自动执行一次维护；
+网页「系统」页有概览（用户、设计稿、存储、近 7 天上传与 MCP 调用量）、回收站（恢复 / 彻底删除）与手动维护。
 
 ## 网页
 
@@ -68,7 +84,7 @@ SQRAFT_ADMIN_USER=admin SQRAFT_ADMIN_PASSWORD='至少8位' SQRAFT_INSECURE_HTTP=
   大稿按页加载，不下载整份 `.sqraft`。
 - **上传**：编辑者可在设计稿页面直接上传新版本（分块、可取消），也可回滚到旧版本。
 - **MCP 接入**：创建令牌，复制 Claude Code / Cursor / VS Code 的配置。
-- **管理后台**（系统管理员）：用户、项目与成员、审计日志（可导出 CSV）。
+- **管理后台**（系统管理员）：用户、项目与成员、审计日志（可导出 CSV）、系统概览与回收站。
 
 ## Mac 上传客户端（apps/uploader）
 
@@ -178,8 +194,6 @@ deploy/Caddyfile        自动 HTTPS 的反向代理配置
 
 - 原始 `doc.json` 未压缩存储（按页拆分的索引是 gzip 的）；大稿收录时整份解析，内存峰值约为 doc.json 大小的 6 倍。
 - 网页画布暂不支持点选节点查看属性、测距（W4、W6）；MCP 暂无 `diff_versions` 与服务端截图。
-- 上传校验失败时已写入仓库的文件不会立即清理（不影响正确性，后续加垃圾回收）。
-- 回收站 30 天自动清理、管理员彻底删除尚未实现。
 
 ## 许可证
 

@@ -4,11 +4,11 @@
 #      docker compose --profile https up -d    # 额外启动 Caddy，自动申请 Let's Encrypt 证书
 services:
   sqraft-cloud:
-    build: .
-    image: sqraft-cloud:latest
+    # 正式镜像（推送 v* 标签后由 GitHub Actions 发布）；自己从源码构建时改成 build: . 与 image: sqraft-cloud:local
+    image: ${SQRAFT_IMAGE:-ghcr.io/hd-l/sqraft-cloud:latest}
     restart: unless-stopped
     ports:
-      - "${SQRAFT_BIND:-127.0.0.1}:8080:8080"
+      - "${SQRAFT_BIND:-127.0.0.1}:${SQRAFT_HTTP_PORT:-8080}:8080"
     environment:
       SQRAFT_ADMIN_USER: ${SQRAFT_ADMIN_USER:-admin}
       SQRAFT_ADMIN_PASSWORD: ${SQRAFT_ADMIN_PASSWORD:?请在 .env 里设置 SQRAFT_ADMIN_PASSWORD}
@@ -18,6 +18,10 @@ services:
       # 仅限可信内网：允许纯 HTTP 访问
       SQRAFT_INSECURE_HTTP: ${SQRAFT_INSECURE_HTTP:-0}
       SQRAFT_MAX_UPLOAD_MB: ${SQRAFT_MAX_UPLOAD_MB:-2048}
+      SQRAFT_TOKEN_MAX_DAYS: ${SQRAFT_TOKEN_MAX_DAYS:-0}
+      SQRAFT_TRASH_DAYS: ${SQRAFT_TRASH_DAYS:-30}
+      # 设置后开放 Prometheus /metrics（Bearer 令牌访问）
+      SQRAFT_METRICS_TOKEN: ${SQRAFT_METRICS_TOKEN:-}
     volumes:
       - ./data:/data
 
@@ -29,7 +33,8 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      SQRAFT_DOMAIN: ${SQRAFT_DOMAIN:?请在 .env 里设置 SQRAFT_DOMAIN}
+      # 使用 --profile https 时必须改成你的域名（Caddy 用它申请证书）
+      SQRAFT_DOMAIN: ${SQRAFT_DOMAIN:-localhost}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

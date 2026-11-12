@@ -37,6 +37,10 @@ const ACTIONS: Record<string, string> = {
   "design.upload": "上传版本",
   "design.rollback": "回滚版本",
   "mcp.call": "MCP 调用",
+  "design.restore": "恢复设计稿",
+  "design.purge": "彻底删除设计稿",
+  "oauth.authorize": "授权客户端",
+  "system.maintenance": "执行维护",
 };
 
 const entries = ref<Entry[]>([]);

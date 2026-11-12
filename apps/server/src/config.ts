@@ -30,6 +30,10 @@ export interface Config {
   mcpRatePerMinute: number;
   /** 网页静态资源目录；null = 自动查找（镜像里是 /app/web） */
   webDir: string | null;
+  /** 回收站保留天数，过期的设计稿连同版本彻底删除 */
+  trashDays: number;
+  /** Prometheus /metrics 的访问令牌；不设置则不开放 /metrics */
+  metricsToken: string | null;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -62,5 +66,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     auditRetentionDays: int(env.SQRAFT_AUDIT_DAYS, 180, "SQRAFT_AUDIT_DAYS"),
     mcpRatePerMinute: int(env.SQRAFT_MCP_RATE, 60, "SQRAFT_MCP_RATE") || 60,
     webDir: env.SQRAFT_WEB_DIR ? resolve(env.SQRAFT_WEB_DIR) : null,
+    trashDays: int(env.SQRAFT_TRASH_DAYS, 30, "SQRAFT_TRASH_DAYS"),
+    metricsToken: env.SQRAFT_METRICS_TOKEN || null,
   };
 }

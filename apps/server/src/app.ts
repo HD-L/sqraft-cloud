@@ -21,6 +21,7 @@ import { projectRoutes } from "./routes/projects";
 import { uploadRoutes } from "./routes/uploads";
 import { readRoutes } from "./routes/read";
 import { oauthRoutes } from "./routes/oauth";
+import { opsRoutes } from "./routes/ops";
 import { mcpRoutes } from "./mcp/server";
 import { webRoutes } from "./web";
 import { DesignReader } from "./reader";
@@ -37,7 +38,7 @@ const CSP =
   "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 /** 不要求 HTTPS 的路径：容器编排的健康检查走的是内部 HTTP。 */
-const PLAIN_HTTP_OK = new Set(["/healthz", "/readyz"]);
+const PLAIN_HTTP_OK = new Set(["/healthz", "/readyz", "/metrics"]);
 
 export async function buildApp(
   config: Config,
@@ -115,6 +116,7 @@ export async function buildApp(
   projectRoutes(app, ctx);
   uploadRoutes(app, ctx);
   oauthRoutes(app, ctx);
+  opsRoutes(app, ctx);
   const reader = new DesignReader(ctx);
   readRoutes(app, ctx, reader);
   mcpRoutes(app, ctx, reader);
