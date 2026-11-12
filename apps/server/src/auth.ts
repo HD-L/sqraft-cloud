@@ -5,8 +5,10 @@
  * - 网页会话：HttpOnly Cookie，写请求必须带 `X-CSRF-Token`；
  * - 令牌：`Authorization: Bearer sqr_…`，用途分 `mcp`（只读）和 `uploader`（可上传），可限定项目。
  *
- * 权限：每个人有团队角色（管理员 / 编辑者 / 查看者），默认对所有项目生效；
- * 项目里可以单独覆盖成编辑者、查看者或「看不到」（members 表）。管理员对所有项目都是编辑者。
+ * 权限：每个人有团队角色（管理员 / 编辑者 / 查看者）和项目可见范围：
+ * - 可见范围 all：团队角色默认对所有项目生效；assigned：只能看到单独分配了的项目（新项目默认看不到）；
+ * - 项目里可以单独覆盖成编辑者、查看者或「看不到」（members 表）。
+ * 管理员对所有项目都是编辑者。
  *
  * 权限检查一律在服务端做；看不到的资源返回 404。
  */
@@ -31,7 +33,10 @@ export interface UserRow {
   role: TeamRole;
   display_name: string;
   email: string;
+  project_scope: ProjectScope;
 }
+
+export type ProjectScope = "all" | "assigned";
 
 export type TeamRole = "admin" | "editor" | "viewer";
 export const TEAM_ROLES: TeamRole[] = ["admin", "editor", "viewer"];
@@ -62,6 +67,7 @@ export function publicUser(u: UserRow) {
     displayName: u.display_name || u.username,
     email: u.email,
     role: u.role,
+    projectScope: u.project_scope,
     isAdmin: u.is_admin === 1,
     mustChangePassword: u.must_change_password === 1,
     disabled: u.disabled_at !== null,
@@ -168,12 +174,13 @@ export function projectRole(db: Db, p: Principal, projectId: string): Role | nul
 }
 
 /** 某个用户在项目里的实际角色（不考虑令牌限定）。 */
-export function userProjectRole(db: Db, user: Pick<UserRow, "id" | "is_admin" | "role">, projectId: string): Role | null {
+export function userProjectRole(db: Db, user: Pick<UserRow, "id" | "is_admin" | "role" | "project_scope">, projectId: string): Role | null {
   if (user.is_admin === 1) return "editor";
   const row = db.prepare("SELECT role FROM members WHERE project_id = ? AND user_id = ?").get(projectId, user.id) as
     | { role: ProjectOverride }
     | undefined;
   if (row) return row.role === "none" ? null : row.role;
+  if (user.project_scope === "assigned") return null;
   return user.role === "editor" ? "editor" : "viewer";
 }
 

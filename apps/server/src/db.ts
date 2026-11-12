@@ -198,6 +198,10 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX recent_views_user ON recent_views(user_id, viewed_at);
   `,
+  // 成员的项目可见范围：all = 默认能看到所有项目；assigned = 只能看到单独分配了的项目
+  `
+  ALTER TABLE users ADD COLUMN project_scope TEXT NOT NULL DEFAULT 'all';
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

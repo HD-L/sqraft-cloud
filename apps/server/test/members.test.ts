@@ -49,6 +49,32 @@ describe("成员与权限", () => {
     expect(notes.notifications.map((n: { kind: string }) => n.kind)).toEqual(["project_access", "invited"]);
   });
 
+  it("管理员按成员控制可见项目：只看分配的项目，新项目默认看不到", async () => {
+    const p1 = (await admin.post("/api/v1/projects", { name: "官网" })).json().project;
+    const p2 = (await admin.post("/api/v1/projects", { name: "App" })).json().project;
+    const out = await member("vendor", "editor", { projectScope: "assigned" });
+    expect((await out.api.get("/api/v1/projects")).json().projects).toEqual([]);
+
+    await admin.put(`/api/v1/admin/projects/${p1.id}/members/${out.id}`, { role: "viewer" });
+    expect((await out.api.get("/api/v1/projects")).json().projects.map((p: { name: string; role: string }) => [p.name, p.role])).toEqual([["官网", "viewer"]]);
+    const p3 = (await admin.post("/api/v1/projects", { name: "新项目" })).json().project;
+    expect((await out.api.get(`/api/v1/projects/${p3.id}`)).statusCode).toBe(404);
+
+    const view = (await admin.get(`/api/v1/team/members/${out.id}/projects`)).json();
+    expect(view.member.projectScope).toBe("assigned");
+    expect(view.projects.map((p: { name: string; override: string | null; effective: string }) => [p.name, p.override, p.effective])).toEqual([
+      ["App", null, "none"],
+      ["官网", "viewer", "viewer"],
+      ["新项目", null, "none"],
+    ]);
+
+    // 改回「所有项目」：没单独设置的项目按团队角色（编辑者）可见
+    await admin.patch(`/api/v1/team/members/${out.id}`, { projectScope: "all" });
+    expect((await out.api.get(`/api/v1/projects/${p2.id}`)).json().project.role).toBe("editor");
+    expect((await admin.patch(`/api/v1/team/members/${out.id}`, { projectScope: "bogus" })).statusCode).toBe(400);
+    expect((await out.api.get(`/api/v1/team/members/${out.id}/projects`)).statusCode).toBe(403);
+  });
+
   it("改角色、移除与恢复成员；至少保留一个管理员", async () => {
     const m = await member("mia", "viewer");
     const me = (await admin.get("/api/v1/me")).json().user;

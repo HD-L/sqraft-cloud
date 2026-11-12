@@ -23,6 +23,8 @@ export interface User {
   displayName: string;
   email: string;
   role: TeamRole;
+  /** all = 默认能看到所有项目；assigned = 只能看到单独分配的项目 */
+  projectScope: "all" | "assigned";
   isAdmin: boolean;
   mustChangePassword: boolean;
   disabled: boolean;

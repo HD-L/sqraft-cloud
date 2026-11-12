@@ -72,8 +72,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .body :deep(textarea) {
   width: 100%;
 }
-.body :deep(input[type="checkbox"]) {
+.body :deep(input[type="checkbox"]),
+.body :deep(input[type="radio"]) {
   width: auto;
+  flex-shrink: 0;
 }
 @keyframes fade {
   from {

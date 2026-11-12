@@ -107,7 +107,10 @@ Docker 里：`docker compose exec -u node sqraft-cloud node server.mjs backup`�
 | 编辑者 | 新建项目，上传和更新设计稿、改状态、回滚版本，评论 |
 | 查看者 | 查看设计稿、评论 |
 
-项目里可以单独覆盖某个人的权限：可编辑、只读或「看不到」（比如对外包同事隐藏项目）。
+管理员可以控制每个成员能看哪些项目（人员管理 →「可见项目」，或项目页 →「成员权限」）：
+
+- **可见范围**：「所有项目」按角色访问，之后新建的项目也能看到；「只看分配的项目」只能看到单独分配了的项目，新项目默认看不到（适合外包、临时协作的同事）；
+- **单个项目**：可以覆盖成可编辑、只读或「看不到」，优先于可见范围。
 从旧版本升级时，原来的普通用户会被设为查看者，并对他原本没被分配的项目设为「看不到」，可见范围保持不变。
 
 ## Mac 上传客户端（apps/uploader）
@@ -172,7 +175,8 @@ claude mcp add --transport http sqraft https://design.example.com/mcp --header "
 | `GET /info` | 服务名、版本、API 版本、支持的 `.sqraft` 格式版本 | 公开 |
 | `POST /auth/login`、`POST /auth/logout` | 登录（连续 5 次错误锁定 15 分钟）/ 登出 | 公开 |
 | `GET /me`、`PATCH /me`、`POST /me/password` | 当前用户；改姓名 / 邮箱；改密码（首次登录必须先改） | 登录 |
-| `GET /team/members`、`POST /team/members`、`PATCH /team/members/:id`、`DELETE /team/members/:id`、`POST …/restore` | 成员列表；建账号（返回初始密码）、改角色 / 资料 / 重置密码、移除与恢复 | 登录 / 管理员 |
+| `GET /team/members`、`POST /team/members`、`PATCH /team/members/:id`、`DELETE /team/members/:id`、`POST …/restore` | 成员列表；建账号（返回初始密码）、改角色 / 资料 / 可见范围（`projectScope`: `all` / `assigned`）/ 重置密码、移除与恢复 | 登录 / 管理员 |
+| `GET /team/members/:id/projects` | 某个成员在每个项目里的覆盖与实际权限 | 管理员 |
 | `GET /me/recent`、`GET /search?q=`、`GET /client` | 最近浏览；全局搜索（项目、设计稿、成员）；上传客户端下载地址 | 登录 |
 | `GET/POST /designs/:id/comments`、`DELETE /comments/:id` | 评论（`@用户名` 通知被提到的人）；作者或管理员删除 | 查看者 |
 | `GET /notifications`、`POST /notifications/read` | 站内通知；标记已读（不传 ids 即全部） | 网页会话 |

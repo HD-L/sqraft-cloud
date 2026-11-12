@@ -109,6 +109,7 @@ interface Access {
   username: string;
   displayName: string;
   role: TeamRole;
+  projectScope: "all" | "assigned";
   override: "editor" | "viewer" | "none" | null;
   effective: "editor" | "viewer" | "none";
 }
@@ -224,11 +225,11 @@ onMounted(load);
           <Avatar :name="m.displayName" :size="28" />
           <div class="who">
             <div style="font-weight: 600">{{ m.displayName }}</div>
-            <div class="muted" style="font-size: 12px">@{{ m.username }} · 团队{{ ROLE_LABEL[m.role] }}</div>
+            <div class="muted" style="font-size: 12px">@{{ m.username }} · {{ ROLE_LABEL[m.role] }}{{ m.projectScope === "assigned" ? " · 只看分配的项目" : "" }}</div>
           </div>
           <span class="tag" :class="{ gray: m.effective === 'viewer', red: m.effective === 'none' }">{{ EFFECTIVE[m.effective] }}</span>
           <select v-if="m.role !== 'admin'" :value="m.override ?? 'inherit'" style="width: 130px" @change="setOverride(m, ($event.target as HTMLSelectElement).value)">
-            <option value="inherit">按团队角色</option>
+            <option value="inherit">{{ m.projectScope === "assigned" ? "默认（看不到）" : `默认（${m.role === "editor" ? "可编辑" : "只读"}）` }}</option>
             <option value="editor">可编辑</option>
             <option value="viewer">只读</option>
             <option value="none">看不到</option>

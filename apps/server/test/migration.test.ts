@@ -10,7 +10,7 @@ describe("升级到团队角色", () => {
     const dir = await mkdtemp(join(tmpdir(), "sqraft-mig-"));
     const file = join(dir, "db.sqlite");
     const old = new Database(file);
-    const before = MIGRATIONS.length - 1;
+    const before = MIGRATIONS.findIndex((m) => m.includes("ADD COLUMN role")); // 团队角色迁移之前的库
     for (let i = 0; i < before; i++) old.exec(MIGRATIONS[i]);
     old.pragma(`user_version = ${before}`);
     const now = Date.now();

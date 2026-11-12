@@ -8,7 +8,7 @@
 import type { FastifyInstance } from "fastify";
 import type { AppContext } from "../app";
 import { audit } from "../audit";
-import { projectRole, publicUser, requireAdmin, requireSession, requireUser, TEAM_ROLES, type Principal, type TeamRole, type UserRow } from "../auth";
+import { projectRole, publicUser, requireAdmin, requireSession, requireUser, TEAM_ROLES, userProjectRole, type Principal, type TeamRole, type UserRow } from "../auth";
 import { checkPasswordPolicy, generatePassword, hashPassword, newId } from "../crypto";
 import type { Db } from "../db";
 import { badRequest, conflict, notFound } from "../errors";
@@ -41,7 +41,7 @@ export async function createMember(
   db: Db,
   p: Principal,
   ip: string,
-  input: { username?: unknown; password?: unknown; role?: unknown; isAdmin?: unknown; displayName?: unknown; email?: unknown },
+  input: { username?: unknown; password?: unknown; role?: unknown; isAdmin?: unknown; displayName?: unknown; email?: unknown; projectScope?: unknown },
 ): Promise<{ user: UserRow; initialPassword: string | null }> {
   const { username, password } = input;
   if (typeof username !== "string" || !USERNAME.test(username)) throw badRequest("用户名 2–64 位，只能包含字母、数字和 . _ @ -");
@@ -49,6 +49,8 @@ export async function createMember(
   const role = input.role !== undefined ? checkRole(input.role) : input.isAdmin === true ? "admin" : "viewer";
   const displayName = input.displayName === undefined ? "" : checkDisplayName(input.displayName);
   const email = input.email === undefined ? "" : checkEmail(input.email);
+  const scope = input.projectScope ?? "all";
+  if (scope !== "all" && scope !== "assigned") throw badRequest("projectScope 只能是 all（所有项目）或 assigned（只看分配的项目）");
   let initial: string | null = null;
   if (password !== undefined) {
     const problem = checkPasswordPolicy(password);
@@ -69,11 +71,12 @@ export async function createMember(
     role,
     display_name: displayName,
     email,
+    project_scope: scope,
   };
   db.prepare(
-    `INSERT INTO users (id, username, password_hash, is_admin, role, display_name, email, must_change_password, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-  ).run(user.id, user.username, user.password_hash, user.is_admin, role, displayName, email, user.created_at);
+    `INSERT INTO users (id, username, password_hash, is_admin, role, display_name, email, project_scope, must_change_password, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+  ).run(user.id, user.username, user.password_hash, user.is_admin, role, displayName, email, scope, user.created_at);
   audit(db, p, ip, { action: "user.create", target: user.id, detail: { username, role } });
   notify(db, user.id, "invited", p.user.id, `${nameOf(p.user)} 为你开通了账号，角色：${ROLE_LABEL[role]}`, "/");
   return { user, initialPassword: initial };
@@ -143,7 +146,7 @@ export function memberRoutes(app: FastifyInstance, { db, config }: AppContext): 
     return { member: publicUser(user), ...(initialPassword ? { initialPassword } : {}) };
   });
 
-  app.patch<{ Params: { id: string }; Body: { role?: unknown; displayName?: unknown; email?: unknown; resetPassword?: unknown } }>(
+  app.patch<{ Params: { id: string }; Body: { role?: unknown; displayName?: unknown; email?: unknown; projectScope?: unknown; resetPassword?: unknown } }>(
     "/api/v1/team/members/:id",
     async (req) => {
       const p = requireAdmin(req);
@@ -152,10 +155,36 @@ export function memberRoutes(app: FastifyInstance, { db, config }: AppContext): 
       if (displayName !== undefined) db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(checkDisplayName(displayName), user.id);
       if (email !== undefined) db.prepare("UPDATE users SET email = ? WHERE id = ?").run(checkEmail(email), user.id);
       if (role !== undefined) setRole(db, p, req.ip, user, checkRole(role));
+      const scope = req.body?.projectScope;
+      if (scope !== undefined) {
+        if (scope !== "all" && scope !== "assigned") throw badRequest("projectScope 只能是 all（所有项目）或 assigned（只看分配的项目）");
+        db.prepare("UPDATE users SET project_scope = ? WHERE id = ?").run(scope, user.id);
+        audit(db, p, req.ip, { action: "user.project_scope", target: user.id, detail: { scope } });
+      }
       const pw = req.body?.resetPassword === true ? await resetPassword(db, p, req.ip, user) : null;
       return { member: publicUser(loadUser(user.id)), ...(pw ? { initialPassword: pw } : {}) };
     },
   );
+
+  // 某个成员能看到哪些项目（管理员）：每个项目的覆盖与实际权限；配合 PUT/DELETE /admin/projects/:id/members/:userId 修改
+  app.get<{ Params: { id: string } }>("/api/v1/team/members/:id/projects", async (req) => {
+    requireAdmin(req);
+    const user = loadUser(req.params.id);
+    const overrides = new Map(
+      (db.prepare("SELECT project_id, role FROM members WHERE user_id = ?").all(user.id) as Array<{ project_id: string; role: string }>).map((r) => [r.project_id, r.role]),
+    );
+    const rows = db.prepare("SELECT id, name, archived_at FROM projects ORDER BY name").all() as Array<{ id: string; name: string; archived_at: number | null }>;
+    return {
+      member: publicUser(user),
+      projects: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        archived: r.archived_at !== null,
+        override: user.is_admin === 1 ? null : (overrides.get(r.id) ?? null),
+        effective: userProjectRole(db, user, r.id) ?? "none",
+      })),
+    };
+  });
 
   app.delete<{ Params: { id: string } }>("/api/v1/team/members/:id", async (req) => {
     const p = requireAdmin(req);

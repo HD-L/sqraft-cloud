@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 人员管理（E2–E5）：成员列表、按姓名搜索、按角色筛选；管理员可添加成员（直接建账号，给初始密码）、
- * 改角色、重置密码、移除（停用账号，可恢复）。
+ * 改角色、设置能看哪些项目、重置密码、移除（停用账号，可恢复）。
  */
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
@@ -15,6 +15,7 @@ interface Member {
   displayName: string;
   email: string;
   role: TeamRole;
+  projectScope: "all" | "assigned";
   disabled: boolean;
   mustChangePassword: boolean;
   createdAt: number;
@@ -44,7 +45,7 @@ async function load() {
 
 // ── 添加成员 ──
 const adding = ref(false);
-const form = ref({ username: "", displayName: "", email: "", role: "editor" as TeamRole });
+const form = ref({ username: "", displayName: "", email: "", role: "editor" as TeamRole, projectScope: "all" as "all" | "assigned" });
 const formError = ref("");
 const issued = ref<{ name: string; username: string; password: string } | null>(null);
 async function add() {
@@ -55,10 +56,11 @@ async function add() {
       displayName: form.value.displayName.trim(),
       email: form.value.email.trim(),
       role: form.value.role,
+      projectScope: form.value.projectScope,
     });
     adding.value = false;
     issued.value = { name: res.member.displayName, username: res.member.username, password: res.initialPassword };
-    form.value = { username: "", displayName: "", email: "", role: "editor" };
+    form.value = { username: "", displayName: "", email: "", role: "editor", projectScope: "all" };
     await load();
   } catch (e) {
     formError.value = (e as Error).message;
@@ -89,6 +91,42 @@ async function reset(m: Member) {
     error.value = (e as Error).message;
   }
 }
+
+// ── 项目权限：这个人能看哪些项目、在每个项目里是什么权限 ──
+interface ProjectAccess {
+  id: string;
+  name: string;
+  archived: boolean;
+  override: "editor" | "viewer" | "none" | null;
+  effective: "editor" | "viewer" | "none";
+}
+const accessFor = ref<Member | null>(null);
+const accessList = ref<ProjectAccess[]>([]);
+const EFFECTIVE = { editor: "可编辑", viewer: "只读", none: "看不到" } as const;
+async function loadAccess(m: Member) {
+  const res = await api<{ member: Member; projects: ProjectAccess[] }>("GET", `/team/members/${m.id}/projects`);
+  accessFor.value = res.member;
+  accessList.value = res.projects;
+}
+async function openAccess(m: Member) {
+  error.value = "";
+  await loadAccess(m).catch((e) => (error.value = (e as Error).message));
+}
+async function setScope(scope: "all" | "assigned") {
+  const m = accessFor.value!;
+  await api("PATCH", `/team/members/${m.id}`, { projectScope: scope });
+  await loadAccess(m);
+  await load();
+}
+async function setProjectAccess(p: ProjectAccess, value: string) {
+  const m = accessFor.value!;
+  if (value === "inherit") await api("DELETE", `/admin/projects/${p.id}/members/${m.id}`);
+  else await api("PUT", `/admin/projects/${p.id}/members/${m.id}`, { role: value });
+  await loadAccess(m);
+}
+const defaultLabel = computed(() =>
+  accessFor.value?.projectScope === "assigned" ? "默认（看不到）" : `默认（${accessFor.value?.role === "editor" ? "可编辑" : "只读"}）`,
+);
 
 async function copy(text: string) {
   await navigator.clipboard.writeText(text);
@@ -126,7 +164,7 @@ onMounted(() => void load().catch((e) => (error.value = (e as Error).message)));
       <table>
         <thead>
           <tr>
-            <th>成员</th><th>角色</th><th>加入时间</th><th v-if="isAdmin">最近登录</th><th v-if="isAdmin">操作</th>
+            <th>成员</th><th>角色</th><th>可见项目</th><th>加入时间</th><th v-if="isAdmin">最近登录</th><th v-if="isAdmin">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -152,6 +190,11 @@ onMounted(() => void load().catch((e) => (error.value = (e as Error).message)));
               </select>
               <span v-else class="tag" :class="m.disabled ? 'gray' : ROLE_TAG[m.role]">{{ m.disabled ? "已移除" : ROLE_LABEL[m.role] }}</span>
             </td>
+            <td>
+              <span v-if="m.role === 'admin'" class="muted">全部（管理员）</span>
+              <button v-else-if="isAdmin && !m.disabled" class="link" @click="openAccess(m)">{{ m.projectScope === "assigned" ? "仅分配的项目" : "全部项目" }} ›</button>
+              <span v-else class="muted">{{ m.projectScope === "assigned" ? "仅分配的项目" : "全部项目" }}</span>
+            </td>
             <td class="muted" :title="formatTime(m.createdAt)">{{ relativeTime(m.createdAt) }}</td>
             <td v-if="isAdmin" class="muted">{{ m.lastLoginAt ? relativeTime(m.lastLoginAt) : "—" }}</td>
             <td v-if="isAdmin">
@@ -164,7 +207,7 @@ onMounted(() => void load().catch((e) => (error.value = (e as Error).message)));
               </template>
             </td>
           </tr>
-          <tr v-if="!shown.length"><td :colspan="isAdmin ? 5 : 3" class="empty">没有匹配的成员</td></tr>
+          <tr v-if="!shown.length"><td :colspan="isAdmin ? 6 : 4" class="empty">没有匹配的成员</td></tr>
         </tbody>
       </table>
     </div>
@@ -182,10 +225,44 @@ onMounted(() => void load().catch((e) => (error.value = (e as Error).message)));
             <option value="admin">管理员 — 拥有全部管理权限</option>
           </select>
         </label>
+        <label class="field">
+          可见项目
+          <select v-model="form.projectScope" :disabled="form.role === 'admin'">
+            <option value="all">所有项目（之后新建的项目也能看到）</option>
+            <option value="assigned">只看分配的项目（建好后在「可见项目」里勾选）</option>
+          </select>
+        </label>
         <p v-if="formError" class="error">{{ formError }}</p>
         <button class="primary" style="width: 100%">创建账号</button>
         <p class="muted" style="font-size: 12px; margin-bottom: 0">创建后会生成一个初始密码，请发给对方；对方首次登录时必须改成自己的密码。</p>
       </form>
+    </Modal>
+
+    <Modal v-if="accessFor" :title="`${accessFor.displayName} 的可见项目`" :width="560" @close="accessFor = null">
+      <div class="scope">
+        <label>
+          <input type="radio" :checked="accessFor.projectScope === 'all'" @change="setScope('all')" />
+          <span><b>所有项目</b><span class="muted">按角色（{{ ROLE_LABEL[accessFor.role] }}）访问，之后新建的项目也能看到</span></span>
+        </label>
+        <label>
+          <input type="radio" :checked="accessFor.projectScope === 'assigned'" @change="setScope('assigned')" />
+          <span><b>只看分配的项目</b><span class="muted">适合外包、临时协作的同事；下面设为「可编辑」或「只读」的项目才能看到，新项目默认看不到</span></span>
+        </label>
+      </div>
+      <p class="muted" style="font-size: 12px">可以对单个项目单独设置，优先于上面的默认：</p>
+      <div class="plist">
+        <div v-for="p in accessList" :key="p.id" class="prow">
+          <span class="pname">{{ p.name }} <span v-if="p.archived" class="tag gray">已归档</span></span>
+          <span class="tag" :class="{ gray: p.effective === 'viewer', red: p.effective === 'none' }">{{ EFFECTIVE[p.effective] }}</span>
+          <select :value="p.override ?? 'inherit'" style="width: 140px" @change="setProjectAccess(p, ($event.target as HTMLSelectElement).value)">
+            <option value="inherit">{{ defaultLabel }}</option>
+            <option value="editor">可编辑</option>
+            <option value="viewer">只读</option>
+            <option value="none">看不到</option>
+          </select>
+        </div>
+        <p v-if="!accessList.length" class="muted">还没有项目</p>
+      </div>
     </Modal>
 
     <Modal v-if="issued" title="初始密码" @close="issued = null">
@@ -217,5 +294,50 @@ onMounted(() => void load().catch((e) => (error.value = (e as Error).message)));
 .role {
   padding: 3px 8px;
   font-size: 12px;
+}
+.scope {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+}
+.scope label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+.scope input {
+  margin-top: 3px;
+}
+.scope label > span {
+  display: flex;
+  flex-direction: column;
+}
+.scope .muted {
+  font-size: 12px;
+}
+.plist {
+  display: flex;
+  flex-direction: column;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.prow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.prow:last-child {
+  border-bottom: none;
+}
+.pname {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
 }
 </style>
