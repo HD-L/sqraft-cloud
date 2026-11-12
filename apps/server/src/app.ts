@@ -103,7 +103,8 @@ export async function buildApp(
   app.setNotFoundHandler((req, reply) => {
     const path = req.url.split("?")[0];
     // 网页的前端路由（/designs/xxx 等）回落到 index.html
-    if (indexHtml && req.method === "GET" && !path.startsWith("/api/") && path !== "/mcp") {
+    // /.well-known/*（MCP 客户端的 OAuth 发现等）必须是真正的 404，回落成网页会让客户端把 HTML 当元数据解析
+    if (indexHtml && req.method === "GET" && !path.startsWith("/api/") && path !== "/mcp" && !path.startsWith("/.well-known/")) {
       return reply.type("text/html; charset=utf-8").send(indexHtml);
     }
     reply.status(404).send({ error: { code: "not_found", message: "接口不存在" } });

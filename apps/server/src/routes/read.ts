@@ -14,6 +14,14 @@ import { loadDesign, type DesignRow } from "./projects";
 
 type VersionParams = { id: string; v: string };
 
+function sendSvg(reply: FastifyReply, result: { svg: string; name: string }) {
+  reply.header("Content-Type", "image/svg+xml; charset=utf-8");
+  // 以附件下载；即使在浏览器里直接打开也不执行任何脚本
+  reply.header("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox");
+  reply.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`${result.name}.svg`)}`);
+  return reply.send(result.svg);
+}
+
 function sendAsset(reply: FastifyReply, ctx: AppContext, idx: VersionIndex, assetId: string) {
   const asset = idx.assets[assetId];
   if (!asset) throw notFound("切图不存在");
@@ -63,6 +71,28 @@ export function readRoutes(app: FastifyInstance, ctx: AppContext, reader: Design
     const { idx } = await open(req, req.params);
     return sendAsset(reply, ctx, idx, req.params.assetId);
   });
+
+  app.get<{ Params: VersionParams & { nodeId: string }; Querystring: { root?: string } }>(
+    "/api/v1/designs/:id/versions/:v/nodes/:nodeId/svg",
+    async (req, reply) => {
+      const { version, idx } = await open(req, req.params);
+      return sendSvg(reply, await reader.exportSvg(version, idx, req.params.nodeId, req.query.root || undefined));
+    },
+  );
+
+  // 签名链接（MCP export_svg 给出）：不需要登录，10 分钟有效，设计稿删除后立即失效
+  app.get<{ Params: { designId: string; v: string; rootId: string; file: string }; Querystring: { exp?: string; sig?: string } }>(
+    "/api/v1/exports/:designId/:v/:rootId/:file",
+    async (req, reply) => {
+      const { designId, v, rootId, file } = req.params;
+      const path = `/api/v1/exports/${designId}/${v}/${encodeURIComponent(rootId)}/${encodeURIComponent(file)}`;
+      if (!file.endsWith(".svg") || !reader.verifyAssetPath(path, req.query.exp, req.query.sig)) throw notFound("链接无效或已过期");
+      const design = db.prepare("SELECT * FROM designs WHERE id = ?").get(designId) as DesignRow | undefined;
+      if (!design || design.deleted_at !== null) throw notFound("链接无效或已过期");
+      const version = reader.resolveVersion(design, v);
+      return sendSvg(reply, await reader.exportSvg(version, await reader.index(version), file.slice(0, -4), rootId));
+    },
+  );
 
   // 签名链接：不需要登录（链接本身就是 10 分钟有效的凭据），设计稿被删除后立即失效
   app.get<{ Params: { designId: string; v: string; assetId: string }; Querystring: { exp?: string; sig?: string } }>(

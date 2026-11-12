@@ -21,7 +21,8 @@ export interface ToolInfo {
 
 const str = (description: string) => ({ type: "string", description });
 const MAX_LIMIT_SCHEMA = 1000;
-const VERSION = { type: ["integer", "string"], description: "版本号；省略时读当前版本（响应里会写明实际读的版本）" };
+// 只用单一类型：type 数组（integer | string）在部分客户端（如 Gemini 风格的函数声明）里不被接受
+const VERSION = { type: "integer", minimum: 1, description: "版本号；省略时读当前版本（响应里会写明实际读的版本）" };
 const DESIGN = str("设计稿 id（来自 list_designs）");
 
 export const TOOLS: ToolInfo[] = [
@@ -46,8 +47,16 @@ export const TOOLS: ToolInfo[] = [
   },
   {
     name: "list_pages",
-    description: "列出设计稿的页面（id、名称、尺寸、节点数）。实现某个界面前先用它找到页面 id，再用 read_page 读布局。",
-    inputSchema: { type: "object", properties: { designId: DESIGN, version: VERSION }, required: ["designId"], additionalProperties: false },
+    description:
+      "列出设计稿的页面（id、名称、尺寸、节点数、画布位置），按画布上从上到下、从左到右排列。实现某个界面前先用它找到页面 id，" +
+      "再用 read_page 读布局。同名页面（sameNameCount > 1，如多个「首页」）通常是不同版本或状态，名称区分不了时先向用户确认要哪一个，" +
+      "或用 search_nodes 按页面上的文案定位。",
+    inputSchema: {
+      type: "object",
+      properties: { designId: DESIGN, version: VERSION, query: str("按页面名模糊搜索") },
+      required: ["designId"],
+      additionalProperties: false,
+    },
   },
   {
     name: "read_page",
@@ -137,11 +146,29 @@ export const TOOLS: ToolInfo[] = [
     name: "get_asset",
     description:
       "获取切图（位图）的下载链接：节点 image.assetId 即切图 id。返回 10 分钟有效的签名链接、格式、尺寸与字节数，" +
-      "用 curl / 下载工具把文件存进项目资源目录。不返回图片内容本身。",
+      "用 curl / 下载工具把文件存进项目资源目录。不返回图片内容本身。矢量图标请用 export_svg。",
     inputSchema: {
       type: "object",
       properties: { designId: DESIGN, assetId: str("切图 id（节点 image.assetId）"), version: VERSION },
       required: ["designId", "assetId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "export_svg",
+    description:
+      "把一个节点（图标、插画、按钮等，含子树）导出为 SVG 文件，返回 10 分钟有效的下载链接、尺寸与注意事项。" +
+      "设计稿里的图标多由矢量路径拼成、没有位图切图：实现图标时用它导出原样的 SVG，用 curl 下载进项目资源目录，" +
+      "不要自己画近似图形。位图内嵌在 SVG 里；纯位图请直接用 get_asset。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        designId: DESIGN,
+        nodeId: str("要导出的节点 id（来自 read_page）"),
+        pageId: str("节点所在的页面 id 或组件 id（可选，给了更快）"),
+        version: VERSION,
+      },
+      required: ["designId", "nodeId"],
       additionalProperties: false,
     },
   },
@@ -307,14 +334,24 @@ export class McpTools {
       }
       case "list_pages": {
         const { design, version, idx } = await this.open(p, args);
-        return [
-          {
-            designId: design.id,
-            version: version.number,
-            pages: idx.pages.map((pg) => ({ id: pg.id, name: pg.name, width: pg.width, height: pg.height, nodeCount: pg.nodeCount })),
-          },
-          design.id,
-        ];
+        const query = stringArg(args, "query", false)?.toLowerCase();
+        const sameName = new Map<string, number>();
+        for (const pg of idx.pages) sameName.set(pg.name, (sameName.get(pg.name) ?? 0) + 1);
+        // 画布顺序：先按行（y），同一行再按 x；Sketch 转换来的稿子里，同一个 Sketch 页面的画板在同一行带
+        const ordered = [...idx.pages].sort((a, b) => a.y - b.y || a.x - b.x);
+        const pages = ordered
+          .filter((pg) => !query || pg.name.toLowerCase().includes(query))
+          .map((pg) => ({
+            id: pg.id,
+            name: pg.name,
+            width: pg.width,
+            height: pg.height,
+            nodeCount: pg.nodeCount,
+            x: Math.round(pg.x),
+            y: Math.round(pg.y),
+            ...((sameName.get(pg.name) ?? 0) > 1 ? { sameNameCount: sameName.get(pg.name) } : {}),
+          }));
+        return [{ designId: design.id, version: version.number, total: pages.length, pages }, design.id];
       }
       case "read_page": {
         const { design, version, idx } = await this.open(p, args);
@@ -426,6 +463,27 @@ export class McpTools {
             bytes: asset.size,
             url: `${baseUrl}${signed.path}`,
             expiresAt: new Date(signed.expiresAt).toISOString(),
+          },
+          design.id,
+        ];
+      }
+      case "export_svg": {
+        const { design, version, idx } = await this.open(p, args);
+        const nodeId = stringArg(args, "nodeId")!;
+        const result = await this.reader.exportSvg(version, idx, nodeId, stringArg(args, "pageId", false));
+        const signed = this.reader.signExportPath(design.id, version.number, result.rootId, nodeId);
+        return [
+          {
+            designId: design.id,
+            version: version.number,
+            nodeId,
+            name: result.name,
+            width: result.width,
+            height: result.height,
+            bytes: Buffer.byteLength(result.svg),
+            url: `${baseUrl}${signed.path}`,
+            expiresAt: new Date(signed.expiresAt).toISOString(),
+            ...(result.warnings.length ? { warnings: result.warnings } : {}),
           },
           design.id,
         ];

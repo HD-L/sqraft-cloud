@@ -199,6 +199,8 @@ onMounted(async () => {
         <div class="pagebar">
           <strong>{{ currentPage?.name }}</strong>
           <span class="muted" v-if="currentPage">{{ currentPage.width }} × {{ currentPage.height }} · {{ currentPage.nodeCount }} 个节点 · v{{ version }}</span>
+          <span class="spacer" />
+          <a class="button" :href="`/api/v1/designs/${id}/versions/${version}/nodes/${encodeURIComponent(pageId)}/svg`" title="把当前页面导出为自包含的 SVG（图片内嵌）">导出 SVG</a>
         </div>
         <CanvasViewer :design-id="id" :version="version" :page-id="pageId" />
       </template>

@@ -66,6 +66,10 @@ describe("MCP 协议", () => {
     expect((await c.raw({ jsonrpc: "2.0", id: 2, method: "tools/list" }, "nope")).statusCode).toBe(404);
     expect((await c.raw({ jsonrpc: "2.0", method: "notifications/initialized" })).statusCode).toBe(202);
     expect((await server.app.inject({ method: "GET", url: "/mcp" })).statusCode).toBe(405);
+    // OAuth 发现地址必须是 JSON 404，不能回落成网页
+    const wk = await server.app.inject({ method: "GET", url: "/.well-known/oauth-protected-resource/mcp" });
+    expect(wk.statusCode).toBe(404);
+    expect(wk.headers["content-type"]).toContain("application/json");
     // 会话绑定令牌：换一个令牌拿不到别人的会话
     const other = (await client(server.app, admin).post("/api/v1/tokens", { name: "x", purpose: "mcp", expiresInDays: 30 })).json().token;
     const res = await server.app.inject({
@@ -79,7 +83,10 @@ describe("MCP 协议", () => {
 
   it("只列出只读工具；调用写工具被拒绝并记审计", async () => {
     const c = await mcp(token);
-    const names = (await c.raw({ jsonrpc: "2.0", id: 9, method: "tools/list" })).json().result.tools.map((t: { name: string }) => t.name);
+    const listed = (await c.raw({ jsonrpc: "2.0", id: 9, method: "tools/list" })).json().result.tools as Array<{ name: string; inputSchema: unknown }>;
+    // 兼容性：参数 schema 里不出现 type 数组
+    expect(JSON.stringify(listed)).not.toMatch(/"type":\[/);
+    const names = listed.map((t) => t.name);
     expect(names).toEqual([
       "list_projects",
       "list_designs",
@@ -91,6 +98,7 @@ describe("MCP 协议", () => {
       "list_components",
       "read_component",
       "get_asset",
+      "export_svg",
       "search_nodes",
     ]);
     const res = await c.raw({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "update_node", arguments: {} } });
@@ -132,7 +140,9 @@ describe("MCP 只读工具", () => {
     expect((await c.call("list_versions", { designId })).json().versions[0]).toMatchObject({ number: 1, note: "首版", current: true });
 
     const pages = (await c.call("list_pages", { designId })).json();
-    expect(pages).toMatchObject({ version: 1, pages: [{ id: "page-1", name: "欢迎回来", width: 375, height: 812, nodeCount: 4 }] });
+    expect(pages).toMatchObject({ version: 1, total: 1, pages: [{ id: "page-1", name: "欢迎回来", width: 375, height: 812, nodeCount: 4, x: 0, y: 0 }] });
+    expect(pages.pages[0].sameNameCount).toBeUndefined();
+    expect((await c.call("list_pages", { designId, query: "不存在" })).json().pages).toEqual([]);
 
     const page = (await c.call("read_page", { designId, pageId: "page-1" })).json();
     expect(page.total).toBe(4);
@@ -175,13 +185,37 @@ describe("MCP 只读工具", () => {
     expect(ok.headers["content-type"]).toBe("image/png");
     expect(ok.rawPayload.equals(Buffer.from(PNG))).toBe(true);
 
-    const tampered = await server.app.inject({ method: "GET", url: url.pathname + url.search.replace(/sig=./, "sig=X") });
+    const tampered = await server.app.inject({ method: "GET", url: url.pathname + url.search.replace(/sig=[^&]+/, "sig=invalid") });
     expect(tampered.statusCode).toBe(404);
     const expired = await server.app.inject({ method: "GET", url: url.pathname + url.search.replace(/exp=\d+/, "exp=1") });
     expect(expired.statusCode).toBe(404);
     // 设计稿删除后链接立即失效
     await client(server.app, admin).delete(`/api/v1/designs/${designId}`);
     expect((await server.app.inject({ method: "GET", url: url.pathname + url.search })).statusCode).toBe(404);
+  });
+
+  it("export_svg 导出节点为 SVG：签名链接免登录下载、内嵌图片；篡改失效；网页登录后也能下载", async () => {
+    const c = await mcp(token);
+    const res = (await c.call("export_svg", { designId, nodeId: "card" })).json();
+    expect(res).toMatchObject({ nodeId: "card", name: "卡片", width: 343, height: 200 });
+    const url = new URL(res.url);
+    expect(url.pathname).toBe(`/api/v1/exports/${designId}/1/page-1/card.svg`);
+    const svg = await server.app.inject({ method: "GET", url: url.pathname + url.search });
+    expect(svg.statusCode).toBe(200);
+    expect(svg.headers["content-type"]).toContain("image/svg+xml");
+    expect(svg.headers["content-security-policy"]).toContain("sandbox");
+    expect(svg.body).toMatch(/^<svg xmlns="http:\/\/www.w3.org\/2000\/svg" width="343" height="200"/);
+    expect(svg.body).toContain("欢迎回来");
+    expect(svg.body).toContain(`data:image/png;base64,${Buffer.from(PNG).toString("base64").slice(0, 40)}`);
+    expect((await server.app.inject({ method: "GET", url: url.pathname + url.search.replace(/sig=[^&]+/, "sig=invalid") })).statusCode).toBe(404);
+
+    // 给了 pageId 也行；不存在的节点报错
+    expect((await c.call("export_svg", { designId, nodeId: "t1", pageId: "page-1" })).json().name).toBe("标题");
+    expect((await c.call("export_svg", { designId, nodeId: "nope" })).isError).toBe(true);
+
+    const web = await client(server.app, admin).get(`/api/v1/designs/${designId}/versions/1/nodes/page-1/svg`);
+    expect(web.statusCode).toBe(200);
+    expect(web.headers["content-disposition"]).toContain("attachment");
   });
 
   it("search_nodes 按文字与图层名搜索", async () => {

@@ -12,6 +12,7 @@ import type { AppContext } from "./app";
 import { generateSecret, safeEqual } from "./crypto";
 import { HttpError, notFound } from "./errors";
 import { buildIndex, type SearchRow, type SubtreeDoc, type VersionIndex } from "./indexer";
+import { exportNodeSvg, type SvgAsset, type SvgExportResult } from "./svg";
 import type { AssetRef } from "./sqraft-file";
 import type { DesignRow, VersionRow } from "./routes/projects";
 
@@ -40,6 +41,7 @@ export class DesignReader {
   private readonly subtrees = new Lru<string, SubtreeDoc>(128);
   private readonly searches = new Lru<string, SearchRow[]>(8);
   private readonly building = new Map<string, Promise<VersionIndex>>();
+  private readonly svgs = new Lru<string, SvgExportResult & { name: string; rootId: string }>(64);
   private secret: string | null = null;
 
   constructor(private readonly ctx: AppContext) {}
@@ -113,6 +115,46 @@ export class DesignReader {
     return rows;
   }
 
+  /** 节点所在的页面或主组件：给了就校验，没给就查搜索索引。 */
+  async rootOf(idx: VersionIndex, nodeId: string, hint?: string): Promise<string> {
+    if (hint) {
+      if (!idx.pages.some((p) => p.id === hint) && !idx.components.some((c) => c.id === hint)) throw notFound(`页面或组件 ${hint} 不存在`);
+      return hint;
+    }
+    const row = (await this.search(idx)).find((r) => r[0] === nodeId);
+    if (!row) throw notFound(`节点 ${nodeId} 不存在`);
+    return row[4];
+  }
+
+  /** 节点子树导出为 SVG（图标 / 切图）。位图内嵌；单次内嵌总量上限 20 MB。 */
+  async exportSvg(v: VersionRow, idx: VersionIndex, nodeId: string, rootHint?: string): Promise<SvgExportResult & { name: string; rootId: string }> {
+    const key = `${v.design_id}@${v.number}/${nodeId}`;
+    const cached = this.svgs.get(key);
+    if (cached) return cached;
+    const rootId = await this.rootOf(idx, nodeId, rootHint);
+    const doc = await this.subtreeDoc(v, idx, rootId);
+    const node = doc.nodes[nodeId];
+    if (!node) throw notFound(`节点 ${nodeId} 不在页面 / 组件 ${rootId} 里`);
+    const assets = new Map<string, SvgAsset>();
+    let total = 0;
+    const stack = [nodeId];
+    while (stack.length) {
+      const n = doc.nodes[stack.pop()!];
+      if (!n) continue;
+      const id = n.image?.assetId;
+      const entry = id ? idx.assets[id] : undefined;
+      if (id && entry && !assets.has(id)) {
+        total += entry.size;
+        if (total > 20 * 1024 * 1024) throw new HttpError(413, "too_large", "这个节点里的图片太大，不适合导出为 SVG；请用 get_asset 单独下载图片");
+        assets.set(id, { mime: entry.mime, bytes: await readFile(this.ctx.store.path(entry.blob)) });
+      }
+      stack.push(...n.children);
+    }
+    const result = { ...exportNodeSvg(doc, nodeId, { asset: (id) => assets.get(id) ?? null }), name: node.name ?? nodeId, rootId };
+    this.svgs.set(key, result);
+    return result;
+  }
+
   // ── 切图签名链接：AI 助手拿到后无需凭据即可下载，10 分钟有效 ──
 
   private signingSecret(): string {
@@ -131,10 +173,17 @@ export class DesignReader {
     return createHmac("sha256", this.signingSecret()).update(`${path}\n${exp}`).digest("base64url");
   }
 
-  signAssetPath(designId: string, version: number, assetId: string, now = Date.now()): { path: string; expiresAt: number } {
-    const path = `/api/v1/assets/${designId}/${version}/${assetId}`;
+  signPath(path: string, now = Date.now()): { path: string; expiresAt: number } {
     const exp = now + SIGNED_URL_TTL_MS;
     return { path: `${path}?exp=${exp}&sig=${this.signature(path, exp)}`, expiresAt: exp };
+  }
+
+  signAssetPath(designId: string, version: number, assetId: string, now = Date.now()): { path: string; expiresAt: number } {
+    return this.signPath(`/api/v1/assets/${designId}/${version}/${assetId}`, now);
+  }
+
+  signExportPath(designId: string, version: number, rootId: string, nodeId: string, now = Date.now()): { path: string; expiresAt: number } {
+    return this.signPath(`/api/v1/exports/${designId}/${version}/${encodeURIComponent(rootId)}/${encodeURIComponent(nodeId)}.svg`, now);
   }
 
   verifyAssetPath(path: string, exp: unknown, sig: unknown): boolean {
