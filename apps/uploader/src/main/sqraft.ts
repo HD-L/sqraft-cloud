@@ -20,6 +20,8 @@ export interface LocalDesign {
   tokens: DocState["tokens"];
   parts: DocPart[];
   assets: LocalAsset[];
+  /** manifest.json 里的页面分组（sketch2sqraft 写的），原样转给服务端整理 */
+  sections?: unknown;
   close(): void;
 }
 
@@ -77,17 +79,19 @@ export async function readLocalDesign(file: string): Promise<LocalDesign> {
     const doc = JSON.parse((await readAll(zip, docEntry)).toString("utf8")) as DocState;
     if (!doc || !Array.isArray(doc.rootIds) || !doc.nodes) throw new Error("doc.json 结构不对");
     let formatVersion = typeof doc.formatVersion === "number" ? doc.formatVersion : 1;
+    let sections: unknown;
     const manifest = list.find((e) => e.fileName === "manifest.json");
     if (manifest) {
-      const m = JSON.parse((await readAll(zip, manifest)).toString("utf8")) as { formatVersion?: unknown };
+      const m = JSON.parse((await readAll(zip, manifest)).toString("utf8")) as { formatVersion?: unknown; sections?: unknown };
       if (typeof m.formatVersion === "number") formatVersion = Math.max(formatVersion, m.formatVersion);
+      if (Array.isArray(m.sections)) sections = m.sections;
     }
     const assets: LocalAsset[] = [];
     for (const e of list) {
       if (!ASSET_NAME_RE.test(e.fileName)) continue;
       assets.push({ name: e.fileName, hash: await hashEntry(zip, e), size: e.uncompressedSize, read: () => readAll(zip, e) });
     }
-    return { formatVersion, tokens: doc.tokens ?? {}, parts: splitDoc(doc), assets, close: () => zip.close() };
+    return { formatVersion, tokens: doc.tokens ?? {}, parts: splitDoc(doc), assets, sections, close: () => zip.close() };
   } catch (error) {
     zip.close();
     throw error;

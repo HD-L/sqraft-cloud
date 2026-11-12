@@ -22,7 +22,7 @@ import { createGunzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { Transform, Writable } from "node:stream";
 import { CURRENT_FORMAT_VERSION } from "@sqraft/core";
-import { ASSET_NAME_RE, HASH_RE, versionFingerprint, type CommitManifest } from "@sqraft-cloud/shared";
+import { ASSET_NAME_RE, HASH_RE, normalizeSections, versionFingerprint, type CommitManifest } from "@sqraft-cloud/shared";
 import type { AppContext } from "../app";
 import { audit } from "../audit";
 import { requireWriter } from "../auth";
@@ -101,7 +101,9 @@ function checkManifest(raw: unknown): CommitManifest {
     names.add(name);
     return { name, hash, size };
   });
-  return { formatVersion, tokens: tokens as CommitManifest["tokens"], parts, assets };
+  // 分组在建索引时整理（不合法的整体忽略），这里只做体积上的限制
+  if (m.sections !== undefined && (!Array.isArray(m.sections) || m.sections.length > 10_000)) throw invalid("sections 需要是数组");
+  return { formatVersion, tokens: tokens as CommitManifest["tokens"], parts, assets, ...(m.sections ? { sections: m.sections as CommitManifest["sections"] } : {}) };
 }
 
 export function commitRoutes(app: FastifyInstance, ctx: AppContext, reader: DesignReader): void {
@@ -202,11 +204,15 @@ export function commitRoutes(app: FastifyInstance, ctx: AppContext, reader: Desi
       if (missing.length) {
         return reply.status(409).send({ error: { code: "missing_blobs", message: `还有 ${missing.length} 个文件没有上传` }, missing });
       }
-      // 和当前版本内容一样就不用再校验、建索引了
-      const contentHash = versionFingerprint(manifest);
+      // 和当前版本内容一样就不用再校验、建索引了。分组按当前版本的页面整理：
+      // 内容真的一样时，页面集合就是当前版本的；不一样时部件哈希已经不同，怎么整理都不会误判
       const current = design.current_version ? reader.resolveVersion(design) : undefined;
-      if (current?.content_hash === contentHash) {
-        return { design: publicDesign(db, design), version: publicVersion(db, current, design.current_version), duplicate: true };
+      if (current?.content_hash) {
+        const pageIds = (await reader.index(current)).pages.map((pg) => pg.id);
+        const early = versionFingerprint({ ...manifest, sections: normalizeSections(manifest.sections, pageIds) });
+        if (current.content_hash === early) {
+          return { design: publicDesign(db, design), version: publicVersion(db, current, design.current_version), duplicate: true };
+        }
       }
       let assetBytes = 0;
       for (const a of manifest.assets) {
@@ -220,6 +226,7 @@ export function commitRoutes(app: FastifyInstance, ctx: AppContext, reader: Desi
       } catch (error) {
         throw fail(error instanceof HttpError ? error : invalid((error as Error).message));
       }
+      const contentHash = versionFingerprint({ ...manifest, sections: built.index.sections });
       const outcome = await commitVersion(ctx, reader, p.user.id, design.id, {
         note: (note as string | undefined)?.trim() ?? "",
         fileSha256: contentHash,

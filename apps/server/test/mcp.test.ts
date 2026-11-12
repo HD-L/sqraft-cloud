@@ -262,6 +262,18 @@ describe("网页只读接口", () => {
     expect(asset.statusCode).toBe(200);
     expect(asset.headers["cache-control"]).toContain("immutable");
     expect((await client(server.app, null).get(`/api/v1/designs/${designId}/versions/1/assets/aaaa1111`)).statusCode).toBe(401);
+    // ?download=：作为附件下载，文件名用传入的名字 + 切图扩展名，路径与控制字符替换掉
+    const dl = await api.get(`/api/v1/designs/${designId}/versions/1/assets/aaaa1111?download=${encodeURIComponent("头像/大图")}`);
+    expect(dl.headers["content-disposition"]).toBe(`attachment; filename*=UTF-8''${encodeURIComponent("头像_大图.png")}`);
+    expect(asset.headers["content-disposition"]).toBeUndefined();
+    // 撇号、括号按 RFC 5987 转义；按码点截断不会切坏表情；重复参数（数组）忽略而不是报错
+    const quote = await api.get(`/api/v1/designs/${designId}/versions/1/assets/aaaa1111?download=${encodeURIComponent("Tom's (new)")}`);
+    expect(quote.headers["content-disposition"]).toBe("attachment; filename*=UTF-8''Tom%27s%20%28new%29.png");
+    const long = await api.get(`/api/v1/designs/${designId}/versions/1/assets/aaaa1111?download=${encodeURIComponent("按".repeat(119) + "😀x")}`);
+    expect(long.statusCode).toBe(200);
+    expect(decodeURIComponent(String(long.headers["content-disposition"]).split("''")[1])).toBe(`${"按".repeat(119)}😀.png`);
+    const twice = await api.get(`/api/v1/designs/${designId}/versions/1/assets/aaaa1111?download=a&download=b`);
+    expect(twice.statusCode).toBe(200);
   });
 
   it("里程碑 1 上传、没有索引的旧版本在首次读取时补建索引", async () => {

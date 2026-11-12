@@ -112,6 +112,7 @@ export async function uploadIncremental(
       tokens: local.tokens,
       parts: local.parts.map((p) => ({ rootId: p.rootId, hash: p.hash })),
       assets: local.assets.map((a) => ({ name: a.name, hash: a.hash, size: a.size })),
+      ...(local.sections ? { sections: local.sections as CommitManifest["sections"] } : {}),
     };
     for (let attempt = 0; ; attempt++) {
       if (signal.aborted) throw new CloudError(0, "aborted", "已取消上传");

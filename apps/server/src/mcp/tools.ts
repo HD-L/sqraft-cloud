@@ -13,6 +13,7 @@ import type { DesignReader } from "../reader";
 import type { VersionIndex } from "../indexer";
 import { loadDesign, publicVersion, type DesignRow, type VersionRow } from "../routes/projects";
 import { diffIndexes, resolveChangedIn } from "../changes";
+import { sectionsOf } from "../sections";
 
 export interface ToolInfo {
   name: string;
@@ -69,7 +70,8 @@ export const TOOLS: ToolInfo[] = [
   {
     name: "list_pages",
     description:
-      "列出设计稿的页面（id、名称、尺寸、节点数、画布位置、changedIn = 内容最后一次变化的版本号），按画布上从上到下、从左到右排列。" +
+      "列出设计稿的页面（id、名称、所在分组 section、尺寸、节点数、画布位置、changedIn = 内容最后一次变化的版本号），" +
+      "按分组排列（Sketch 转换来的稿子一个 Sketch 页面一组，常按版本或模块命名），组内从上到下、从左到右；section 只看某一组。" +
       "实现某个界面前先用它找到页面 id，再用 read_page 读布局；changedSince 只列出某个版本之后内容变过的页面。" +
       "同名页面（sameNameCount > 1，如多个「首页」）通常是不同版本或状态，名称区分不了时先向用户确认要哪一个，" +
       "或用 search_nodes 按页面上的文案定位。",
@@ -79,6 +81,7 @@ export const TOOLS: ToolInfo[] = [
         designId: DESIGN,
         version: VERSION,
         query: str("按页面名模糊搜索"),
+        section: str("只看这个分组（名称，来自结果里的 sections）"),
         changedSince: { type: "integer", minimum: 1, description: "只列出这个版本之后（不含）内容变过的页面，例如上次按 v3 实现过，传 3" },
       },
       required: ["designId"],
@@ -376,10 +379,16 @@ export class McpTools {
         const query = stringArg(args, "query", false)?.toLowerCase();
         const since = args.changedSince === undefined ? undefined : Number(args.changedSince);
         if (since !== undefined && (!Number.isInteger(since) || since < 1)) throw badRequest("changedSince 需要正整数版本号");
+        const sectionFilter = stringArg(args, "section", false);
         const sameName = new Map<string, number>();
         for (const pg of idx.pages) sameName.set(pg.name, (sameName.get(pg.name) ?? 0) + 1);
-        // 画布顺序：先按行（y），同一行再按 x；Sketch 转换来的稿子里，同一个 Sketch 页面的画板在同一行带
-        const ordered = [...idx.pages].sort((a, b) => a.y - b.y || a.x - b.x);
+        // 分组顺序，组内按画布阅读顺序（先行后列）
+        const sections = sectionsOf(idx);
+        if (sectionFilter && !sections.some((s) => s.name === sectionFilter)) throw notFound(`分组「${sectionFilter}」不存在`);
+        const byId = new Map(idx.pages.map((pg) => [pg.id, pg]));
+        const ordered = sections
+          .filter((s) => !sectionFilter || s.name === sectionFilter)
+          .flatMap((s) => s.pageIds.map((id) => ({ ...byId.get(id)!, section: s.name })));
         const pages = ordered
           .filter((pg) => !query || pg.name.toLowerCase().includes(query))
           .map((pg) => ({ pg, changedIn: resolveChangedIn(pg, version.number) }))
@@ -388,6 +397,7 @@ export class McpTools {
           .map(({ pg, changedIn }) => ({
             id: pg.id,
             name: pg.name,
+            section: pg.section,
             width: pg.width,
             height: pg.height,
             nodeCount: pg.nodeCount,
@@ -396,7 +406,16 @@ export class McpTools {
             ...(changedIn !== undefined ? { changedIn } : {}),
             ...((sameName.get(pg.name) ?? 0) > 1 ? { sameNameCount: sameName.get(pg.name) } : {}),
           }));
-        return [{ designId: design.id, version: version.number, total: pages.length, pages }, design.id];
+        return [
+          {
+            designId: design.id,
+            version: version.number,
+            sections: sections.map((s) => ({ name: s.name, pageCount: s.pageIds.length })),
+            total: pages.length,
+            pages,
+          },
+          design.id,
+        ];
       }
       case "read_page": {
         const { design, version, idx } = await this.open(p, args);

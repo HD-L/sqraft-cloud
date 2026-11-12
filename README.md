@@ -88,9 +88,26 @@ Docker 里：`docker compose exec -u node sqraft-cloud node server.mjs backup`�
   被 @、自己创建或参与过的设计稿有新评论、被加入团队或项目时收到站内通知。
 - **人员管理**：管理员直接建账号（生成初始密码，对方首次登录必须修改）、改角色、重置密码、移除（停用账号，可恢复）。
 
-- **看稿**：项目 → 设计稿 → 右侧页面列表（可搜索），中间是只读画布（可把当前页导出为 SVG）（用 Sqraft 自己的渲染器，效果与桌面端一致），
-  顶部切换版本；滚轮平移、⌘/Ctrl + 滚轮或触控板捏合缩放。地址栏带版本与页面，链接发给别人能直接打开同一页。
-  大稿按页加载，不下载整份 `.sqraft`。
+- **看稿**：项目 → 设计稿。左侧按分组列出画板（一个 Sketch 页面一组，如 v4.3.2；可搜索、只看本版改动），中间两种视图：
+  - **总览**：全部画板按组排开显示缩略图，滚轮平移、⌘/Ctrl + 滚轮或捏合缩放；单击选中，双击进入；双击左侧分组定位到该组；
+  - **单页**：只看一个画板，← → 翻到上一个 / 下一个，Esc 回总览；按 `?` 查看全部快捷键。右侧面板：
+    - **标注**：单击选中图层（最深一层，面包屑可选上级；Enter 进子图层、⇧Enter 回父图层、Tab 切同级）。
+      - 画布：选中框带四角手柄、尺寸标签、组件名徽标；鼠标移到另一个图层显示两者间距（含对齐偏差），移回选中图层显示到父容器的距离，
+        移到画板外显示到画板四边的距离；按住 ⌥ 改为相对画板宽高的百分比。⌘ + / ⌘ − / ⌘ 0 缩放，⇧1 适应画布，⇧2 缩放到选中。
+      - 面板分区可折叠：位置与尺寸（相对父级或画板；尺寸模式 固定 / 适应内容 / 填充容器；最小最大值；绝对定位；叠加父级后的实际不透明度；
+        裁剪与蒙版）、所属组件（属性值、覆盖数）、图片、填充、描边、文字（预览、字体、字重、字号、行高倍数、字距、段距、对齐、截断等）、
+        效果、自动布局，以及带语法高亮的 CSS（每个分区可单独复制）。
+      - 顶部 ⚙ 选平台与单位：Web（px / rem）、iOS（pt）、Android（dp / sp）、小程序（rpx）；设计稿倍率自动按画板宽判断，也可指定
+        @1x / @2x / @3x 或按目标宽度换算；精度 0–2 位小数。颜色格式 HEX / HEX8 / ARGB / RGBA / HSLA / UIColor，点色块循环切换。
+      - 绑定了 Token 的值下方显示 Token 名；没绑定但与某个颜色 Token 相同的提示「≈ Token（未绑定）」。点任意值复制。
+        选中的图层记在地址栏（`&node=`），可以把链接发给别人；
+    - **切图**：选中图层（没选时为整个画板）按当前平台的档位导出——iOS @1x / @2x / @3x、Android mdpi … xxxhdpi（分 drawable-* 目录）、
+      Web / 小程序 1x / 2x，格式 PNG / JPG / WEBP，多个档位打成 zip；也可导出 SVG。导出范围按实际可见内容计算（蒙版、裁切、
+      投影方向都算在内）；有图片没加载出来时报错而不是导出灰色占位；单边超过 8192px 会等比缩小并提示。重名文件按最终路径自动加后缀。
+      本画板用到的位图列表：悬停在画布上高亮所有用到处，点击选中并定位，可下载原图或按档位导出，「打包本页位图」一次导出全部。
+  画面用 Sqraft 自己的渲染器绘制，效果与桌面端一致。地址栏带版本、画板与视图（`?v=&board=&mode=detail`），链接发给别人能直接打开同一处。
+  大稿按页加载、只给看得见的画板画缩略图，不下载整份 `.sqraft`。
+  分组来自 sketch2sqraft 写进 `manifest.json` 的 `sections`；旧文件没有分组时按画布上的横带自动分组。
 - **版本变更**：每个版本显示相对上一版改了什么（修改 / 新增 / 删除 / 改名 / 挪动了哪些页面，组件与 Token 的变动），
   明细里点页面名直接跳过去；页面列表给本版改动的页面打点，可勾选「只看本版改动的页面」。
 - **发布新版本**：只通过 Mac 上传客户端（网页没有上传入口，侧栏可下载客户端）；编辑者在网页上可以回滚到旧版本。
@@ -147,7 +164,7 @@ pnpm dist:uploader    # 打包 apps/uploader/release/Sqraft 上传-<版本>-arm6
 | `list_projects` / `list_designs` | 找到设计稿 |
 | `list_versions` | 版本历史，每个版本带相对上一版的变更数量 |
 | `diff_versions` | 两个版本之间新增 / 修改 / 删除 / 改名 / 挪动的页面与组件、Token 与切图的增减 |
-| `list_pages` | 页面列表（id、名称、尺寸、节点数、`changedIn` 内容最后变化的版本）；`changedSince` 只列某版本之后变过的页面 |
+| `list_pages` | 页面列表（id、名称、所在分组 `section`、尺寸、节点数、`changedIn` 内容最后变化的版本），按分组排列；`section` 只看一组，`changedSince` 只列某版本之后变过的页面 |
 | `read_page` | 页面节点树摘要（与 Sqraft 桌面端 `read_document` 同格式），可只读子树、限层数，分页 |
 | `inspect_layout` | 世界坐标、自动布局、Token 解析后的间距，分页 |
 | `get_tokens` | 设计 Token |
@@ -192,7 +209,8 @@ claude mcp add --transport http sqraft https://design.example.com/mcp --header "
 | `POST /designs/:id/blobs/check` → `PUT /designs/:id/blobs/:hash` → `POST /designs/:id/commits` | 增量上传：问缺哪些、只传缺的、按清单生成版本 | 编辑者 |
 | `/admin/users`、`/admin/projects`、`PUT/DELETE /admin/projects/:id/members/:userId` | 用户、项目（归档）、项目权限覆盖（`editor` / `viewer` / `none`） | 系统管理员 |
 | `GET /admin/audit?user=&action=&from=&to=&format=csv` | 审计日志查询与 CSV 导出 | 系统管理员 |
-| `GET /designs/:id/versions/:v/pages`、`…/pages/:pageId` | 页面列表；单页节点（`:v` 为版本号或 `current`） | 查看者 |
+| `GET /designs/:id/versions/:v/pages`、`…/pages/:pageId` | 页面列表（含分组 `sections`，按组排列）；单页节点（`:v` 为版本号或 `current`） | 查看者 |
+| `GET /designs/:id/versions/:v/parts/:pageId` | 单页节点的原始数据（不含 Token），直接发存储里的 gzip，长缓存 + ETag；总览缩略图用 | 查看者 |
 | `GET /designs/:id/versions/:v/components`、`…/tokens`、`…/assets/:assetId` | 组件、Token、切图 | 查看者 |
 | `GET /oauth/authorize`（网页）→ `POST /oauth/token` | 上传客户端浏览器登录：授权码 + PKCE（S256），授权码 60 秒、只能用一次 | 公开 / 网页会话 |
 | `POST /api/v1/oauth/revoke` | 令牌吊销自己（客户端退出登录） | 令牌 |
@@ -232,7 +250,8 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $HOST
   "manifest": {
     "formatVersion": 7, "tokens": {…},
     "parts":  [{"rootId": "<页面或组件 id>", "hash": "<部件哈希>"}],
-    "assets": [{"name": "assets/<id>.png", "hash": "<切图哈希>", "size": 12345}]
+    "assets": [{"name": "assets/<id>.png", "hash": "<切图哈希>", "size": 12345}],
+    "sections": [{"name": "v4.3.2", "pageIds": ["<页面 id>"]}]
   }
 }'
 ```

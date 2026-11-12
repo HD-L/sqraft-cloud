@@ -9,7 +9,7 @@
  */
 
 import type { DocNode, DocState } from "@sqraft/core";
-import { makePart, parsePart, splitDoc, type CommitManifest, type DocPart } from "@sqraft-cloud/shared";
+import { makePart, normalizeSections, parsePart, splitDoc, type CommitManifest, type DocPart, type PageSection } from "@sqraft-cloud/shared";
 import type { BlobStore } from "./storage";
 import type { AssetRef } from "./sqraft-file";
 import { sniffImage } from "./image";
@@ -65,6 +65,8 @@ export interface VersionIndex {
   /** assetId（文件名去扩展名）→ 资源 */
   assets: Record<string, AssetEntry>;
   searchBlob: string;
+  /** 页面分组（来自 manifest.json / 提交清单）；没有时看稿按画布行推断（见 sections.ts） */
+  sections?: PageSection[];
 }
 
 /** 一页（或一个组件）的节点：只含该子树，`rootIds` 只有它自己。 */
@@ -154,7 +156,14 @@ async function assets(refs: AssetRef[], store: BlobStore, base?: IndexBase): Pro
   return out;
 }
 
-async function assemble(described: Described[], tokens: DocState["tokens"], refs: AssetRef[], store: BlobStore, base?: IndexBase): Promise<VersionIndex> {
+async function assemble(
+  described: Described[],
+  tokens: DocState["tokens"],
+  refs: AssetRef[],
+  store: BlobStore,
+  base?: IndexBase,
+  rawSections?: unknown,
+): Promise<VersionIndex> {
   const pages: PageEntry[] = [];
   const components: ComponentEntry[] = [];
   const search: SearchRow[] = [];
@@ -166,6 +175,7 @@ async function assemble(described: Described[], tokens: DocState["tokens"], refs
     else components.push(d.entry);
   }
   for (const c of components) c.instanceCount = instanceCounts.get(c.id) ?? 0;
+  const sections = normalizeSections(rawSections, pages.map((p) => p.id));
   return {
     schema: INDEX_SCHEMA,
     tokens: tokens ?? {},
@@ -173,11 +183,12 @@ async function assemble(described: Described[], tokens: DocState["tokens"], refs
     components,
     assets: await assets(refs, store, base),
     searchBlob: await store.putJson(search),
+    ...(sections ? { sections } : {}),
   };
 }
 
 /** 整份文档建索引（网页上传 / 旧版客户端上传的 .sqraft）。 */
-export async function buildIndex(doc: DocState, refs: AssetRef[], store: BlobStore, base?: IndexBase): Promise<BuiltIndex> {
+export async function buildIndex(doc: DocState, refs: AssetRef[], store: BlobStore, base?: IndexBase, sections?: unknown): Promise<BuiltIndex> {
   const described: Described[] = [];
   let partBytes = 0;
   for (const part of splitDoc(doc)) {
@@ -191,7 +202,7 @@ export async function buildIndex(doc: DocState, refs: AssetRef[], store: BlobSto
     described.push(describe(part));
   }
   return {
-    index: await assemble(described, doc.tokens, refs, store, base),
+    index: await assemble(described, doc.tokens, refs, store, base, sections),
     nodeCount: Object.keys(doc.nodes).length,
     pageCount: described.filter((d) => d.kind === "page").length,
     partBytes,
@@ -225,7 +236,7 @@ export async function buildIndexFromManifest(m: CommitManifest, store: BlobStore
   }
   const refs: AssetRef[] = m.assets.map((a) => ({ name: a.name, blob: a.hash, size: a.size }));
   return {
-    index: await assemble(described, m.tokens, refs, store, base),
+    index: await assemble(described, m.tokens, refs, store, base, m.sections),
     nodeCount,
     pageCount: described.filter((d) => d.kind === "page").length,
     partBytes,

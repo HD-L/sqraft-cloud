@@ -24,6 +24,50 @@ export interface DocPart {
   nodes: Record<string, DocNode>;
 }
 
+/** 页面分组（如 Sketch 页面）：sketch2sqraft 写在 manifest.json 的 `sections` 里，看稿时按组浏览。 */
+export interface PageSection {
+  name: string;
+  pageIds: string[];
+}
+
+/**
+ * 校验并整理分组：只留真实存在的页面、每页只归一组、去掉空组；不合法的输入整体忽略（返回 undefined）。
+ * 没被任何组收录的页面放进末尾的「未分组」。
+ */
+export function normalizeSections(raw: unknown, pageIds: readonly string[]): PageSection[] | undefined {
+  if (!Array.isArray(raw) || !raw.length || raw.length > 10_000) return undefined;
+  const exists = new Set(pageIds);
+  const taken = new Set<string>();
+  const out: PageSection[] = [];
+  for (const s of raw) {
+    if (!s || typeof s !== "object") return undefined;
+    const { name, pageIds: ids } = s as { name?: unknown; pageIds?: unknown };
+    if (typeof name !== "string" || !Array.isArray(ids)) return undefined;
+    const kept: string[] = [];
+    for (const id of ids) {
+      if (typeof id !== "string" || !exists.has(id) || taken.has(id)) continue;
+      taken.add(id);
+      kept.push(id);
+    }
+    if (kept.length) out.push({ name: name.trim().slice(0, 200) || "未命名", pageIds: kept });
+  }
+  if (!out.length) return undefined;
+  const rest = pageIds.filter((id) => !taken.has(id));
+  if (rest.length) out.push({ name: "未分组", pageIds: rest });
+  return uniqueNames(out);
+}
+
+/** 组名去重：重名的依次加「(2)」「(3)」……组名在看稿、MCP 筛选里当标识用，必须唯一。 */
+export function uniqueNames<T extends { name: string }>(sections: T[]): T[] {
+  const used = new Set<string>();
+  return sections.map((s) => {
+    let name = s.name;
+    for (let n = 2; used.has(name); n++) name = `${s.name} (${n})`;
+    used.add(name);
+    return name === s.name ? s : { ...s, name };
+  });
+}
+
 /** 增量提交的清单（客户端 → 服务端）。部件与切图的字节事先按哈希上传。 */
 export interface CommitManifest {
   formatVersion: number;
@@ -32,6 +76,8 @@ export interface CommitManifest {
   parts: Array<{ rootId: string; hash: string }>;
   /** `name` 是 zip 内路径（`assets/<id>.<ext>`），`hash` 是文件字节的 SHA-256 */
   assets: Array<{ name: string; hash: string; size: number }>;
+  /** 页面分组（manifest.json 里有就带上） */
+  sections?: PageSection[];
 }
 
 export const HASH_RE = /^[0-9a-f]{64}$/;
@@ -161,6 +207,7 @@ export function versionFingerprint(m: {
   tokens: unknown;
   parts: Array<{ rootId: string; hash: string }>;
   assets: Array<{ name: string; hash: string }>;
+  sections?: PageSection[];
 }): string {
   return sha256(
     canonicalJson({
@@ -168,6 +215,8 @@ export function versionFingerprint(m: {
       tokens: m.tokens ?? {},
       parts: m.parts.map((p) => [p.rootId, p.hash]),
       assets: m.assets.map((a) => [a.name, a.hash]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
+      // 没有分组时不出现这个键：保持与加分组之前算出的指纹一致
+      ...(m.sections?.length ? { sections: m.sections.map((s) => [s.name, s.pageIds]) } : {}),
     }),
   );
 }

@@ -138,7 +138,8 @@ describe("增量上传", () => {
     const c3 = (await api.get(`/api/v1/designs/${designId}/versions/3/changes`)).json().changes;
     expect(c3.pages).toMatchObject({ modified: [], renamed: [{ id: "page-1", name: "新首页", from: "首页" }], moved: [{ id: "page-1" }] });
     const pages3 = (await api.get(`/api/v1/designs/${designId}/versions/3/pages`)).json().pages;
-    expect(pages3.map((p: { changedIn: number }) => p.changedIn)).toEqual([1, 2]);
+    // 首页挪到了右边，阅读顺序变成「我的」在前
+    expect(Object.fromEntries(pages3.map((p: { id: string; changedIn: number }) => [p.id, p.changedIn]))).toEqual({ "page-1": 1, "page-2": 2 });
 
     // 第一个版本相对「无」：全部是新增
     const c1 = (await api.get(`/api/v1/designs/${designId}/versions/1/changes`)).json().changes;

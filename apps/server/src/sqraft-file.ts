@@ -184,10 +184,12 @@ export async function ingestSqraft(file: string, store: BlobStore, limits: Inges
   const manifest = adopted.find((a) => a.name === "manifest.json") ?? null;
 
   let manifestVersion = 1;
+  let manifestSections: unknown;
   if (manifest) {
     try {
-      const parsed = JSON.parse(await readFile(store.path(manifest.blob), "utf8")) as { formatVersion?: unknown };
+      const parsed = JSON.parse(await readFile(store.path(manifest.blob), "utf8")) as { formatVersion?: unknown; sections?: unknown };
       if (typeof parsed.formatVersion === "number") manifestVersion = parsed.formatVersion;
+      manifestSections = parsed.sections;
     } catch {
       throw invalid("manifest.json 不是有效的 JSON");
     }
@@ -217,7 +219,7 @@ export async function ingestSqraft(file: string, store: BlobStore, limits: Inges
   const pageCount = (parsed.rootIds as unknown[]).filter((id) => typeof id === "string" && nodes[id]?.type === "page").length;
   const assets = adopted.filter((a) => a.name.startsWith("assets/"));
   const doc2 = parsed as unknown as DocState;
-  const built = await buildIndex(doc2, assets, store, base);
+  const built = await buildIndex(doc2, assets, store, base, manifestSections);
   const order = new Map(doc2.rootIds.map((id, i) => [id, i]));
   const contentHash = versionFingerprint({
     formatVersion,
@@ -226,6 +228,7 @@ export async function ingestSqraft(file: string, store: BlobStore, limits: Inges
       .map((e) => ({ rootId: e.id, hash: e.blob }))
       .sort((a, b) => order.get(a.rootId)! - order.get(b.rootId)!),
     assets: assets.map((a) => ({ name: a.name, hash: a.blob })),
+    sections: built.index.sections,
   });
 
   return {
