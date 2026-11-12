@@ -92,6 +92,10 @@ export function fakePng(seed: number, length = 2048): Uint8Array {
   return b;
 }
 
+function node(id: string, type: string, name: string, parentId: string | null, children: string[], extra: Record<string, unknown> = {}) {
+  return { id, type, name, parentId, children, x: 0, y: 0, width: 100, height: 100, rotation: 0, opacity: 1, visible: true, locked: false, style: {}, ...extra };
+}
+
 /** 合成一个最小的 .sqraft：一个页面、若干节点、可选切图。 */
 export function makeSqraft(opts: { title?: string; assets?: Record<string, Uint8Array>; formatVersion?: number; extra?: Zippable } = {}): Uint8Array {
   const formatVersion = opts.formatVersion ?? 7;
@@ -100,10 +104,24 @@ export function makeSqraft(opts: { title?: string; assets?: Record<string, Uint8
     formatVersion,
     rootIds: ["page-1"],
     nodes: {
-      "page-1": { id: "page-1", type: "page", name: opts.title ?? "首页", parentId: null, children: ["t1"], x: 0, y: 0, width: 375, height: 812 },
-      t1: { id: "t1", type: "text", name: "标题", parentId: "page-1", children: [], x: 16, y: 16, width: 200, height: 24, text: opts.title ?? "你好" },
+      "page-1": node("page-1", "page", opts.title ?? "首页", null, ["card"], { width: 375, height: 812 }),
+      card: node("card", "frame", "卡片", "page-1", ["t1", "pic"], {
+        x: 16,
+        y: 100,
+        width: 343,
+        height: 200,
+        layout: { direction: "vertical", gap: 12, crossGap: 0, padding: { top: 16, right: 16, bottom: 16, left: 16 }, align: "start", justify: "start", wrap: false },
+      }),
+      t1: node("t1", "text", "标题", "card", [], { x: 16, y: 16, width: 200, height: 24, text: opts.title ?? "你好" }),
+      pic: node("pic", "image", "配图", "card", [], {
+        x: 16,
+        y: 52,
+        width: 64,
+        height: 64,
+        image: { assetId: "aaaa1111", naturalWidth: 64, naturalHeight: 64 },
+      }),
     },
-    tokens: {},
+    tokens: { "color/primary": { type: "color", value: "#1677ff" } },
   };
   const files: Zippable = {
     "manifest.json": strToU8(JSON.stringify({ formatVersion, app: "sqraft", version: "test" })),

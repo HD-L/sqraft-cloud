@@ -19,12 +19,21 @@ import { tokenRoutes } from "./routes/tokens";
 import { adminRoutes } from "./routes/admin";
 import { projectRoutes } from "./routes/projects";
 import { uploadRoutes } from "./routes/uploads";
+import { readRoutes } from "./routes/read";
+import { mcpRoutes } from "./mcp/server";
+import { webRoutes } from "./web";
+import { DesignReader } from "./reader";
 
 export interface AppContext {
   db: Db;
   config: Config;
   store: BlobStore;
 }
+
+/** 网页只加载同源资源；画布图片来自同源切图接口，样式允许内联（Vue 运行时的 style 绑定）。 */
+const CSP =
+  "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; " +
+  "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 /** 不要求 HTTPS 的路径：容器编排的健康检查走的是内部 HTTP。 */
 const PLAIN_HTTP_OK = new Set(["/healthz", "/readyz"]);
@@ -64,8 +73,9 @@ export async function buildApp(
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Referrer-Policy", "no-referrer");
-    reply.header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'");
-    reply.header("Cache-Control", "no-store");
+    // 路由自己设过的（切图的长缓存、SVG 的沙箱 CSP、网页静态资源）不覆盖
+    if (!reply.hasHeader("Content-Security-Policy")) reply.header("Content-Security-Policy", CSP);
+    if (!reply.hasHeader("Cache-Control")) reply.header("Cache-Control", "no-store");
   });
 
   app.setErrorHandler((error, req, reply) => {
@@ -87,7 +97,13 @@ export async function buildApp(
     return reply.status(500).send({ error: { code: "internal", message: "服务器内部错误" } });
   });
 
-  app.setNotFoundHandler((_req, reply) => {
+  let indexHtml: string | null = null;
+  app.setNotFoundHandler((req, reply) => {
+    const path = req.url.split("?")[0];
+    // 网页的前端路由（/designs/xxx 等）回落到 index.html
+    if (indexHtml && req.method === "GET" && !path.startsWith("/api/") && path !== "/mcp") {
+      return reply.type("text/html; charset=utf-8").send(indexHtml);
+    }
     reply.status(404).send({ error: { code: "not_found", message: "接口不存在" } });
   });
 
@@ -97,6 +113,10 @@ export async function buildApp(
   adminRoutes(app, ctx);
   projectRoutes(app, ctx);
   uploadRoutes(app, ctx);
+  const reader = new DesignReader(ctx);
+  readRoutes(app, ctx, reader);
+  mcpRoutes(app, ctx, reader);
+  indexHtml = (await webRoutes(app, ctx)).indexHtml;
 
   app.addHook("onClose", async () => {
     db.close();

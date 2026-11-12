@@ -193,14 +193,15 @@ export function uploadRoutes(app: FastifyInstance, ctx: AppContext): void {
         assets: JSON.stringify(result.assets),
         node_count: result.nodeCount,
         page_count: result.pageCount,
+        index_blob: result.indexBlob,
         status: "ready",
         created_at: now,
       };
       db.prepare(
         `INSERT INTO versions (design_id, number, note, uploader_id, file_sha256, size, format_version, doc_blob, manifest_blob,
-                               assets, node_count, page_count, status, created_at)
+                               assets, node_count, page_count, index_blob, status, created_at)
          VALUES (@design_id, @number, @note, @uploader_id, @file_sha256, @size, @format_version, @doc_blob, @manifest_blob,
-                 @assets, @node_count, @page_count, @status, @created_at)`,
+                 @assets, @node_count, @page_count, @index_blob, @status, @created_at)`,
       ).run(version);
       db.prepare("UPDATE designs SET current_version = ?, updated_at = ? WHERE id = ?").run(next, now, d.id);
       return { design: { ...d, current_version: next, updated_at: now }, version, duplicate: false };

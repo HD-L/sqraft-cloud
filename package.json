@@ -9,8 +9,9 @@
   },
   "scripts": {
     "dev": "pnpm --filter @sqraft-cloud/server dev",
-    "build": "pnpm --filter @sqraft-cloud/server build",
+    "dev:web": "pnpm --filter @sqraft-cloud/web dev",
+    "build": "pnpm --filter @sqraft-cloud/web build && pnpm --filter @sqraft-cloud/server build",
     "test": "pnpm --filter @sqraft-cloud/server test",
-    "typecheck": "pnpm --filter @sqraft-cloud/server typecheck"
+    "typecheck": "pnpm --filter @sqraft-cloud/server typecheck && pnpm --filter @sqraft-cloud/web typecheck"
   }
 }

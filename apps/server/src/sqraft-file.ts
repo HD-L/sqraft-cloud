@@ -15,7 +15,8 @@ import { createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
 import yauzl from "yauzl";
-import { CURRENT_FORMAT_VERSION } from "@sqraft/core";
+import { CURRENT_FORMAT_VERSION, type DocState } from "@sqraft/core";
+import { buildIndex } from "./indexer";
 import { HttpError } from "./errors";
 import { sha256File, type BlobStore } from "./storage";
 
@@ -35,6 +36,8 @@ export interface IngestResult {
   assets: AssetRef[];
   nodeCount: number;
   pageCount: number;
+  /** 按页索引（见 indexer.ts） */
+  indexBlob: string;
 }
 
 export interface IngestLimits {
@@ -204,6 +207,8 @@ export async function ingestSqraft(file: string, store: BlobStore, limits: Inges
     );
   }
   const pageCount = (parsed.rootIds as unknown[]).filter((id) => typeof id === "string" && nodes[id]?.type === "page").length;
+  const assets = adopted.filter((a) => a.name.startsWith("assets/"));
+  const indexBlob = await store.putJson(await buildIndex(parsed as unknown as DocState, assets, store));
 
   return {
     fileSha256,
@@ -211,8 +216,9 @@ export async function ingestSqraft(file: string, store: BlobStore, limits: Inges
     formatVersion,
     docBlob: doc.blob,
     manifestBlob: manifest?.blob ?? null,
-    assets: adopted.filter((a) => a.name.startsWith("assets/")),
+    assets,
     nodeCount,
     pageCount,
+    indexBlob,
   };
 }

@@ -27,7 +27,7 @@ describe("分块上传与版本", () => {
     const v1 = makeSqraft({ title: "v1", assets: { "assets/aaaa1111.png": png } });
     const first = await upload(api, designId, v1, "首版");
     expect(first.statusCode).toBe(200);
-    expect(first.json()).toMatchObject({ duplicate: false, version: { number: 1, note: "首版", pageCount: 1, nodeCount: 2, assetCount: 1, current: true } });
+    expect(first.json()).toMatchObject({ duplicate: false, version: { number: 1, note: "首版", pageCount: 1, nodeCount: 4, assetCount: 1, current: true } });
 
     const again = await upload(api, designId, v1);
     expect(again.json()).toMatchObject({ duplicate: true, version: { number: 1 } });
@@ -36,8 +36,8 @@ describe("分块上传与版本", () => {
     const v2 = makeSqraft({ title: "v2", assets: { "assets/aaaa1111.png": png } });
     const second = await upload(api, designId, v2, "改了标题");
     expect(second.json()).toMatchObject({ duplicate: false, version: { number: 2 } });
-    // 同一张切图只存一份：v2 只多了新的 doc.json（manifest、ops 与切图都复用）
-    expect(await blobCount()).toBe(blobsBefore + 1);
+    // 同一张切图只存一份：v2 只多了 doc.json、拆出的页面、搜索索引与版本索引（manifest、ops、切图都复用）
+    expect(await blobCount()).toBe(blobsBefore + 4);
 
     const versions = (await api.get(`/api/v1/designs/${designId}/versions`)).json().versions;
     expect(versions.map((v: { number: number; current: boolean }) => [v.number, v.current])).toEqual([

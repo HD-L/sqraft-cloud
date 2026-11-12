@@ -11,7 +11,7 @@ COPY . .
 RUN test -f vendor/sqraft/packages/core/package.json || (echo "缺少 vendor/sqraft：请先执行 git submodule update --init" && exit 1)
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
-RUN pnpm --filter @sqraft-cloud/server deploy --prod --legacy /out && cp apps/server/dist/server.mjs /out/server.mjs
+RUN pnpm --filter @sqraft-cloud/server deploy --prod --legacy /out && cp apps/server/dist/server.mjs /out/server.mjs && cp -r apps/web/dist /out/web
 
 FROM node:22-bookworm-slim
 ENV NODE_ENV=production \

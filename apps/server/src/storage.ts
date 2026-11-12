@@ -4,7 +4,8 @@
  */
 
 import { createReadStream } from "node:fs";
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 
@@ -44,6 +45,37 @@ export class BlobStore {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** 存一段字节，返回其哈希。 */
+  async putBuffer(bytes: Buffer): Promise<string> {
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    if (await this.has(hash)) return hash;
+    const tmp = this.tmpPath();
+    await writeFile(tmp, bytes);
+    await this.adopt(tmp, hash);
+    return hash;
+  }
+
+  /** 存 JSON（gzip 压缩），用于索引与按页拆分的节点数据。 */
+  putJson(value: unknown): Promise<string> {
+    return this.putBuffer(gzipSync(Buffer.from(JSON.stringify(value))));
+  }
+
+  async getJson<T>(hash: string): Promise<T> {
+    return JSON.parse(gunzipSync(await readFile(this.path(hash))).toString("utf8")) as T;
+  }
+
+  /** 读开头若干字节（嗅探图片格式与尺寸用）。 */
+  async head(hash: string, bytes = 65536): Promise<Buffer> {
+    const fh = await open(this.path(hash), "r");
+    try {
+      const buf = Buffer.alloc(bytes);
+      const { bytesRead } = await fh.read(buf, 0, bytes, 0);
+      return buf.subarray(0, bytesRead);
+    } finally {
+      await fh.close();
     }
   }
 

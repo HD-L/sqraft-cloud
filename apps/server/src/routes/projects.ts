@@ -34,6 +34,7 @@ export interface VersionRow {
   assets: string;
   node_count: number;
   page_count: number;
+  index_blob: string | null;
   status: string;
   created_at: number;
 }

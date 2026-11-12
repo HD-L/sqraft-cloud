@@ -118,6 +118,11 @@ const MIGRATIONS: string[] = [
   CREATE INDEX audit_at ON audit(at);
   CREATE INDEX audit_user ON audit(user_id, at);
   `,
+  // 里程碑 2：按页索引（gzip JSON blob）与服务端密钥（切图签名链接）
+  `
+  ALTER TABLE versions ADD COLUMN index_blob TEXT;
+  CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

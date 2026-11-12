@@ -26,6 +26,10 @@ export interface Config {
   tokenMaxDays: number | null;
   /** 审计日志保留天数 */
   auditRetentionDays: number;
+  /** 每个令牌每分钟最多的 MCP 工具调用次数 */
+  mcpRatePerMinute: number;
+  /** 网页静态资源目录；null = 自动查找（镜像里是 /app/web） */
+  webDir: string | null;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -56,5 +60,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sessionTtlMs: int(env.SQRAFT_SESSION_DAYS, 7, "SQRAFT_SESSION_DAYS") * DAY,
     tokenMaxDays: tokenMaxDays === 0 ? null : tokenMaxDays,
     auditRetentionDays: int(env.SQRAFT_AUDIT_DAYS, 180, "SQRAFT_AUDIT_DAYS"),
+    mcpRatePerMinute: int(env.SQRAFT_MCP_RATE, 60, "SQRAFT_MCP_RATE") || 60,
+    webDir: env.SQRAFT_WEB_DIR ? resolve(env.SQRAFT_WEB_DIR) : null,
   };
 }

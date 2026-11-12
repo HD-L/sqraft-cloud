@@ -9,8 +9,8 @@
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| 1. 服务端基础 | 账号、会话、令牌、项目权限、分块上传与版本、审计日志 | ✅ 已完成（本仓库） |
-| 2. 只读 MCP + 网页查看 | 按页索引、MCP 只读工具、网页画布 | 待开发 |
+| 1. 服务端基础 | 账号、会话、令牌、项目权限、分块上传与版本、审计日志 | ✅ 已完成 |
+| 2. 只读 MCP + 网页查看 | 按页索引、11 个 MCP 只读工具、网页看稿与管理后台 | ✅ 已完成 |
 | 3. Mac 上传客户端 | 浏览器登录（OAuth + PKCE）、选项目与设计稿上传 | 待开发 |
 | 4. 部署与试点 | 镜像发布、备份恢复、部署文档 | 部分完成（Dockerfile / compose） |
 
@@ -38,7 +38,8 @@ pnpm build                    # 产出 apps/server/dist/server.mjs
 SQRAFT_ADMIN_USER=admin SQRAFT_ADMIN_PASSWORD='至少8位' SQRAFT_INSECURE_HTTP=1 node apps/server/dist/server.mjs
 ```
 
-开发时 `pnpm dev` 热重载；`pnpm test` 跑测试；`pnpm typecheck` 做类型检查。
+开发时开两个终端：`pnpm dev`（服务端，8080，热重载）与 `pnpm dev:web`（网页，5173，接口转发到 8080），
+浏览器打开 http://localhost:5173。`pnpm test` 跑测试；`pnpm typecheck` 做类型检查；`pnpm build` 构建网页与服务端。
 
 ## 配置（环境变量）
 
@@ -54,7 +55,44 @@ SQRAFT_ADMIN_USER=admin SQRAFT_ADMIN_PASSWORD='至少8位' SQRAFT_INSECURE_HTTP=
 | `SQRAFT_SESSION_DAYS` | `7` | 网页会话有效期 |
 | `SQRAFT_TOKEN_MAX_DAYS` | `0`（不限） | 令牌最长有效期；设置后不再允许「不过期」令牌 |
 | `SQRAFT_AUDIT_DAYS` | `180` | 审计日志保留天数 |
+| `SQRAFT_MCP_RATE` | `60` | 每个令牌每分钟最多的 MCP 工具调用次数 |
+| `SQRAFT_WEB_DIR` | 自动 | 网页构建产物目录（镜像里是 `/app/web`） |
 | `SQRAFT_LOG_LEVEL` | `info` | 日志级别（JSON 格式输出到标准输出，凭据已脱敏） |
+
+## 网页
+
+浏览器打开服务地址即可：
+
+- **看稿**：项目 → 设计稿 → 左侧页面列表（可搜索），中间是只读画布（用 Sqraft 自己的渲染器，效果与桌面端一致），
+  顶部切换版本；滚轮平移、⌘/Ctrl + 滚轮或触控板捏合缩放。地址栏带版本与页面，链接发给别人能直接打开同一页。
+  大稿按页加载，不下载整份 `.sqraft`。
+- **上传**：编辑者可在设计稿页面直接上传新版本（分块、可取消），也可回滚到旧版本。
+- **MCP 接入**：创建令牌，复制 Claude Code / Cursor / VS Code 的配置。
+- **管理后台**（系统管理员）：用户、项目与成员、审计日志（可导出 CSV）。
+
+## MCP（给 AI 编码助手）
+
+端点 `POST /mcp`（Streamable HTTP），用 `Authorization: Bearer sqr_…` 鉴权，只提供只读工具：
+
+| 工具 | 用途 |
+|---|---|
+| `list_projects` / `list_designs` / `list_versions` | 找到设计稿与版本 |
+| `list_pages` | 页面列表（id、名称、尺寸、节点数） |
+| `read_page` | 页面节点树摘要（与 Sqraft 桌面端 `read_document` 同格式），可只读子树、限层数，分页 |
+| `inspect_layout` | 世界坐标、自动布局、Token 解析后的间距，分页 |
+| `get_tokens` | 设计 Token |
+| `list_components` / `read_component` | 主组件与其内部结构 |
+| `get_asset` | 切图的 10 分钟签名下载链接（不含图片内容本身） |
+| `search_nodes` | 按文字或图层名找节点所在页面 |
+
+为控制上下文体积，`read_page` 默认省略路径锚点与实例覆盖记录（实测这两项占大稿响应的四分之三），
+单次响应在 50 KB 左右；需要时传 `includeVectors` / `includeOverrides`。所有调用都记审计日志。
+
+Claude Code 接入示例（网页「MCP 接入」页会生成带你的地址和令牌的版本）：
+
+```bash
+claude mcp add --transport http sqraft https://design.example.com/mcp --header "Authorization: Bearer sqr_..."
+```
 
 ## 接口一览（`/api/v1`）
 
@@ -74,6 +112,8 @@ SQRAFT_ADMIN_USER=admin SQRAFT_ADMIN_PASSWORD='至少8位' SQRAFT_INSECURE_HTTP=
 | `POST /designs/:id/uploads` → `PUT /uploads/:id` → `POST /uploads/:id/complete` | 分块、可续传上传（头 `Upload-Offset`，每块 ≤ 64 MB） | 编辑者 |
 | `/admin/users`、`/admin/projects`、`/admin/projects/:id/members/:userId` | 用户、项目、成员管理 | 系统管理员 |
 | `GET /admin/audit?user=&action=&from=&to=&format=csv` | 审计日志查询与 CSV 导出 | 系统管理员 |
+| `GET /designs/:id/versions/:v/pages`、`…/pages/:pageId` | 页面列表；单页节点（`:v` 为版本号或 `current`） | 查看者 |
+| `GET /designs/:id/versions/:v/components`、`…/tokens`、`…/assets/:assetId` | 组件、Token、切图 | 查看者 |
 
 ### 上传流程
 
@@ -94,7 +134,11 @@ curl -X POST -H "Authorization: Bearer $TOKEN" $HOST/api/v1/uploads/$UPLOAD/comp
 ## 代码结构
 
 ```
+apps/web/               网页（Vue 3 + Vite），画布复用 @sqraft/render
 apps/server/            Node.js 服务（Fastify + better-sqlite3）
+  src/indexer.ts        上传时按页拆分 doc.json、建搜索索引
+  src/reader.ts         设计稿读取（版本解析、按页加载、LRU 缓存、切图签名）
+  src/mcp/              MCP 端点与只读工具（复用 @sqraft/ai-tools）
   src/app.ts            组装应用：凭据解析、CSRF、HTTPS 强制、安全响应头、错误格式
   src/auth.ts           会话 / 令牌 / 项目权限
   src/sqraft-file.ts    .sqraft 校验与收录
@@ -109,7 +153,8 @@ deploy/Caddyfile        自动 HTTPS 的反向代理配置
 
 ## 已知限制（后续里程碑处理）
 
-- `doc.json` 以原样存储，未压缩；大稿收录时整份解析，内存峰值约为 doc.json 大小的 6 倍。
+- 原始 `doc.json` 未压缩存储（按页拆分的索引是 gzip 的）；大稿收录时整份解析，内存峰值约为 doc.json 大小的 6 倍。
+- 网页画布暂不支持点选节点查看属性、测距（W4、W6）；MCP 暂无 `diff_versions` 与服务端截图。
 - 上传校验失败时已写入仓库的文件不会立即清理（不影响正确性，后续加垃圾回收）。
 - 回收站 30 天自动清理、管理员彻底删除尚未实现。
 
