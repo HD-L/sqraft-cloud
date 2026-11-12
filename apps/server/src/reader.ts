@@ -11,7 +11,8 @@ import type { DocState } from "@sqraft/core";
 import type { AppContext } from "./app";
 import { generateSecret, safeEqual } from "./crypto";
 import { HttpError, notFound } from "./errors";
-import { buildIndex, type SearchRow, type SubtreeDoc, type VersionIndex } from "./indexer";
+import { buildIndex, withContentHashes, type IndexBase, type SearchRow, type SubtreeDoc, type VersionIndex } from "./indexer";
+import { diffIndexes, type VersionChanges } from "./changes";
 import { exportNodeSvg, type SvgAsset, type SvgExportResult } from "./svg";
 import type { AssetRef } from "./sqraft-file";
 import type { DesignRow, VersionRow } from "./routes/projects";
@@ -42,6 +43,7 @@ export class DesignReader {
   private readonly searches = new Lru<string, SearchRow[]>(8);
   private readonly building = new Map<string, Promise<VersionIndex>>();
   private readonly svgs = new Lru<string, SvgExportResult & { name: string; rootId: string }>(64);
+  private readonly hashed = new Lru<string, VersionIndex>(16);
   private secret: string | null = null;
 
   constructor(private readonly ctx: AppContext) {}
@@ -74,7 +76,7 @@ export class DesignReader {
     if (pending) return pending;
     const job = (async () => {
       const doc = JSON.parse(await readFile(this.ctx.store.path(v.doc_blob), "utf8")) as DocState;
-      const idx = await buildIndex(doc, JSON.parse(v.assets) as AssetRef[], this.ctx.store);
+      const { index: idx } = await buildIndex(doc, JSON.parse(v.assets) as AssetRef[], this.ctx.store);
       const blob = await this.ctx.store.putJson(idx);
       this.ctx.db.prepare("UPDATE versions SET index_blob = ? WHERE design_id = ? AND number = ?").run(blob, v.design_id, v.number);
       v.index_blob = blob;
@@ -113,6 +115,57 @@ export class DesignReader {
     const rows = await this.ctx.store.getJson<SearchRow[]>(idx.searchBlob);
     this.searches.set(idx.searchBlob, rows);
     return rows;
+  }
+
+  /** 带内容哈希的索引（比较版本差异用）：旧索引补算后缓存在内存里。 */
+  async diffIndex(v: VersionRow): Promise<VersionIndex> {
+    const idx = await this.index(v);
+    if (idx.schema >= 2) return idx;
+    const cached = this.hashed.get(v.index_blob!);
+    if (cached) return cached;
+    const full = await withContentHashes(idx, this.ctx.store);
+    this.hashed.set(v.index_blob!, full);
+    return full;
+  }
+
+  /** 给建索引用的基准：没变的页面沿用它的条目与搜索行。 */
+  async indexBase(v: VersionRow): Promise<IndexBase> {
+    const idx = await this.index(v);
+    let grouped: Promise<Map<string, SearchRow[]>> | null = null;
+    const group = async () => {
+      const map = new Map<string, SearchRow[]>();
+      for (const r of await this.search(idx)) {
+        const list = map.get(r[4]);
+        if (list) list.push(r);
+        else map.set(r[4], [r]);
+      }
+      return map;
+    };
+    return {
+      idx,
+      rowsFor: async (rootId) => ((await (grouped ??= group())).get(rootId) ?? []),
+    };
+  }
+
+  /** 设计稿当前版本的基准；还没有版本时为 undefined。 */
+  async currentBase(design: DesignRow): Promise<IndexBase | undefined> {
+    if (design.current_version === null) return undefined;
+    return this.indexBase(this.resolveVersion(design));
+  }
+
+  /**
+   * 一个版本相对基准的变更。新版本生成时就记好了；增量上传之前的旧版本按「相对上一个版本号」补算并写回。
+   */
+  async changesOf(v: VersionRow): Promise<VersionChanges> {
+    if (v.changes) return JSON.parse(v.changes) as VersionChanges;
+    const prev = this.ctx.db
+      .prepare("SELECT * FROM versions WHERE design_id = ? AND number < ? ORDER BY number DESC LIMIT 1")
+      .get(v.design_id, v.number) as VersionRow | undefined;
+    const changes = diffIndexes(prev ? await this.diffIndex(prev) : null, await this.diffIndex(v), prev?.number ?? null);
+    const text = JSON.stringify(changes);
+    this.ctx.db.prepare("UPDATE versions SET changes = ? WHERE design_id = ? AND number = ?").run(text, v.design_id, v.number);
+    v.changes = text;
+    return changes;
   }
 
   /** 节点所在的页面或主组件：给了就校验，没给就查搜索索引。 */

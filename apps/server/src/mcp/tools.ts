@@ -12,6 +12,7 @@ import { badRequest, notFound } from "../errors";
 import type { DesignReader } from "../reader";
 import type { VersionIndex } from "../indexer";
 import { loadDesign, publicVersion, type DesignRow, type VersionRow } from "../routes/projects";
+import { diffIndexes, resolveChangedIn } from "../changes";
 
 export interface ToolInfo {
   name: string;
@@ -42,18 +43,42 @@ export const TOOLS: ToolInfo[] = [
   },
   {
     name: "list_versions",
-    description: "列出设计稿的版本历史（版本号、说明、上传人、时间，标出当前版本）。需要对照旧版或确认依据哪一版开发时调用。",
+    description:
+      "列出设计稿的版本历史（版本号、说明、上传人、时间，标出当前版本），每个版本带 changes：相对上一版新增 / 修改 / 删除 / 改名 / 挪动了几个页面和组件。" +
+      "要知道具体改了哪些页面用 diff_versions。",
     inputSchema: { type: "object", properties: { designId: DESIGN }, required: ["designId"], additionalProperties: false },
+  },
+  {
+    name: "diff_versions",
+    description:
+      "比较两个版本：列出新增、修改（内容变了）、删除的页面与组件，只改名 / 只在画布上挪动的单独列出，另有 Token 与切图的增减。" +
+      "设计稿更新后用它找出需要重新实现的页面，只对改动的页面调 read_page，不必通读整份稿。from 省略时与 to 的上一版比较。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        designId: DESIGN,
+        from: { type: "integer", minimum: 1, description: "旧版本号；省略时取 to 的上一个版本" },
+        to: { type: "integer", minimum: 1, description: "新版本号；省略时取当前版本" },
+      },
+      required: ["designId"],
+      additionalProperties: false,
+    },
   },
   {
     name: "list_pages",
     description:
-      "列出设计稿的页面（id、名称、尺寸、节点数、画布位置），按画布上从上到下、从左到右排列。实现某个界面前先用它找到页面 id，" +
-      "再用 read_page 读布局。同名页面（sameNameCount > 1，如多个「首页」）通常是不同版本或状态，名称区分不了时先向用户确认要哪一个，" +
+      "列出设计稿的页面（id、名称、尺寸、节点数、画布位置、changedIn = 内容最后一次变化的版本号），按画布上从上到下、从左到右排列。" +
+      "实现某个界面前先用它找到页面 id，再用 read_page 读布局；changedSince 只列出某个版本之后内容变过的页面。" +
+      "同名页面（sameNameCount > 1，如多个「首页」）通常是不同版本或状态，名称区分不了时先向用户确认要哪一个，" +
       "或用 search_nodes 按页面上的文案定位。",
     inputSchema: {
       type: "object",
-      properties: { designId: DESIGN, version: VERSION, query: str("按页面名模糊搜索") },
+      properties: {
+        designId: DESIGN,
+        version: VERSION,
+        query: str("按页面名模糊搜索"),
+        changedSince: { type: "integer", minimum: 1, description: "只列出这个版本之后（不含）内容变过的页面，例如上次按 v3 实现过，传 3" },
+      },
       required: ["designId"],
       additionalProperties: false,
     },
@@ -332,16 +357,36 @@ export class McpTools {
         const rows = db.prepare("SELECT * FROM versions WHERE design_id = ? ORDER BY number DESC").all(design.id) as VersionRow[];
         return [{ designId: design.id, versions: rows.map((v) => publicVersion(db, v, design.current_version)) }, design.id];
       }
+      case "diff_versions": {
+        const design = this.design(p, args);
+        const to = this.reader.resolveVersion(design, args.to);
+        let from: VersionRow | undefined;
+        if (args.from !== undefined) from = this.reader.resolveVersion(design, args.from);
+        else {
+          from = db
+            .prepare("SELECT * FROM versions WHERE design_id = ? AND number < ? ORDER BY number DESC LIMIT 1")
+            .get(design.id, to.number) as VersionRow | undefined;
+        }
+        if (from && from.number === to.number) throw badRequest("from 和 to 是同一个版本");
+        const changes = diffIndexes(from ? await this.reader.diffIndex(from) : null, await this.reader.diffIndex(to), from?.number ?? null);
+        const { base: _b, ...rest } = changes;
+        return [{ designId: design.id, from: from?.number ?? null, to: to.number, ...rest }, design.id];
+      }
       case "list_pages": {
         const { design, version, idx } = await this.open(p, args);
         const query = stringArg(args, "query", false)?.toLowerCase();
+        const since = args.changedSince === undefined ? undefined : Number(args.changedSince);
+        if (since !== undefined && (!Number.isInteger(since) || since < 1)) throw badRequest("changedSince 需要正整数版本号");
         const sameName = new Map<string, number>();
         for (const pg of idx.pages) sameName.set(pg.name, (sameName.get(pg.name) ?? 0) + 1);
         // 画布顺序：先按行（y），同一行再按 x；Sketch 转换来的稿子里，同一个 Sketch 页面的画板在同一行带
         const ordered = [...idx.pages].sort((a, b) => a.y - b.y || a.x - b.x);
         const pages = ordered
           .filter((pg) => !query || pg.name.toLowerCase().includes(query))
-          .map((pg) => ({
+          .map((pg) => ({ pg, changedIn: resolveChangedIn(pg, version.number) }))
+          // 旧版本没有记录（changedIn 未知）时宁可列出
+          .filter(({ changedIn }) => since === undefined || changedIn === undefined || changedIn > since)
+          .map(({ pg, changedIn }) => ({
             id: pg.id,
             name: pg.name,
             width: pg.width,
@@ -349,6 +394,7 @@ export class McpTools {
             nodeCount: pg.nodeCount,
             x: Math.round(pg.x),
             y: Math.round(pg.y),
+            ...(changedIn !== undefined ? { changedIn } : {}),
             ...((sameName.get(pg.name) ?? 0) > 1 ? { sameNameCount: sameName.get(pg.name) } : {}),
           }));
         return [{ designId: design.id, version: version.number, total: pages.length, pages }, design.id];
@@ -439,7 +485,10 @@ export class McpTools {
             designId: design.id,
             version: version.number,
             total: all.length,
-            components: all.slice(offset, offset + limit).map(({ blob: _b, ...c }) => c),
+            components: all.slice(offset, offset + limit).map(({ blob: _b, contentHash: _h, uses: _u, changedIn, ...c }) => {
+              const v = resolveChangedIn({ changedIn }, version.number);
+              return v === undefined ? c : { ...c, changedIn: v };
+            }),
             ...(offset + limit < all.length ? { nextCursor: String(offset + limit) } : {}),
           },
           design.id,

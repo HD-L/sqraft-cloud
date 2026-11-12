@@ -6,6 +6,8 @@ import type { AppContext } from "../app";
 
 export const API_VERSION = 1;
 export const APP_VERSION = "0.1.0";
+/** 可选能力：客户端据此决定走哪条路（老服务端没有这个字段，客户端退回整包上传） */
+export const FEATURES = ["incremental-upload"];
 
 export function systemRoutes(app: FastifyInstance, { db }: AppContext): void {
   app.get("/healthz", async () => ({ ok: true }));
@@ -24,5 +26,6 @@ export function systemRoutes(app: FastifyInstance, { db }: AppContext): void {
     version: APP_VERSION,
     apiVersion: API_VERSION,
     formatVersion: { min: 1, max: CURRENT_FORMAT_VERSION },
+    features: FEATURES,
   }));
 }

@@ -1,0 +1,18 @@
+{
+  "name": "@sqraft-cloud/shared",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "服务端与上传客户端共用的设计稿拆分规则（按页拆分、规范序列化、内容哈希）",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "devDependencies": {
+    "@sqraft/core": "workspace:*",
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}

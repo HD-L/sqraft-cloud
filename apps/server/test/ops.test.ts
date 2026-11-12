@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp } from "../src/app";
 import { createBackup, restoreBackup } from "../src/backup";
+import { SCHEMA_VERSION } from "../src/db";
 import { collectGarbage, purgeTrash, referencedBlobs } from "../src/maintenance";
 import { ADMIN, client, fakePng, login, makeSqraft, startServer, upload, type TestServer } from "./helpers";
 
@@ -117,7 +118,7 @@ describe("备份与恢复", () => {
     const backupDir = await mkdtemp(join(tmpdir(), "sqraft-backup-"));
     const file = join(backupDir, "b.tar.gz");
     const m = await createBackup(server.ctx.config.dataDir, file);
-    expect(m).toMatchObject({ app: "sqraft-cloud", schemaVersion: 3 });
+    expect(m).toMatchObject({ app: "sqraft-cloud", schemaVersion: SCHEMA_VERSION });
     expect(m.blobs).toBeGreaterThan(0);
 
     const target = join(backupDir, "restored");

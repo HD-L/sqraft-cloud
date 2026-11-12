@@ -159,6 +159,23 @@ async function upload() {
   }
 }
 
+/** 「相对 v3：修改 2 页、新增 1 页」 */
+function changeText(r: UploadResult): string {
+  const c = r.changes;
+  if (!c || c.base === null) return "";
+  const p = c.pages;
+  const bits = [
+    p.modified && `修改 ${p.modified} 页`,
+    p.added && `新增 ${p.added} 页`,
+    p.removed && `删除 ${p.removed} 页`,
+    p.renamed && `改名 ${p.renamed} 页`,
+    p.moved && `挪动 ${p.moved} 页`,
+    c.components.added + c.components.modified + c.components.removed && `组件变动 ${c.components.added + c.components.modified + c.components.removed} 个`,
+    c.tokens && `Token 变动 ${c.tokens} 个`,
+  ].filter(Boolean);
+  return `相对 v${c.base}：${bits.length ? bits.join("、") : "页面内容没有变化"}`;
+}
+
 function size(n: number) {
   return n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : n < 1024 ** 3 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(2)} GB`;
 }
@@ -253,7 +270,13 @@ onUnmounted(() => off?.());
         <div v-if="progress" class="progress">
           <div class="bar"><div :style="{ width: `${(progress.sent / progress.total) * 100}%` }" /></div>
           <div class="row">
-            <span class="muted">{{ progress.phase === "verifying" ? "上传完成，正在校验与建索引…" : `${size(progress.sent)} / ${size(progress.total)}` }}</span>
+            <span class="muted">{{
+              progress.phase === "analyzing"
+                ? "正在分析文件，找出改动的页面…"
+                : progress.phase === "verifying"
+                  ? "上传完成，正在校验与建索引…"
+                  : `${size(progress.sent)} / ${size(progress.total)}`
+            }}</span>
             <span class="spacer" />
             <button v-if="progress.phase === 'uploading'" @click="api.cancelUpload()">取消</button>
           </div>
@@ -266,6 +289,11 @@ onUnmounted(() => off?.());
       <section v-if="result" class="card">
         <p :class="result.duplicate ? 'muted' : 'ok'">
           {{ result.duplicate ? `内容与当前版本 v${result.version} 相同，没有生成新版本` : `已发布 v${result.version}` }}
+        </p>
+        <p v-if="!result.duplicate && changeText(result)" class="muted">{{ changeText(result) }}</p>
+        <p v-if="result.stats.mode === 'incremental'" class="muted">
+          只传了改动的部分：{{ size(result.stats.sentBytes) }}（全部 {{ size(result.stats.totalBytes) }}），
+          页面 {{ result.stats.sentParts }} / {{ result.stats.totalParts }}，切图 {{ result.stats.sentAssets }} / {{ result.stats.totalAssets }}
         </p>
         <div class="row link-row">
           <code>{{ result.url }}</code>

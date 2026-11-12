@@ -91,6 +91,7 @@ describe("MCP 协议", () => {
       "list_projects",
       "list_designs",
       "list_versions",
+      "diff_versions",
       "list_pages",
       "read_page",
       "inspect_layout",

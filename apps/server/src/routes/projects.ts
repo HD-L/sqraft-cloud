@@ -9,6 +9,7 @@ import { projectRole, requireProjectRole, requireUser, requireWriter, type Princ
 import { newId } from "../crypto";
 import type { Db } from "../db";
 import { badRequest, notFound } from "../errors";
+import { summarize, type VersionChanges } from "../changes";
 
 export interface DesignRow {
   id: string;
@@ -37,6 +38,10 @@ export interface VersionRow {
   index_blob: string | null;
   status: string;
   created_at: number;
+  /** 整版内容指纹；增量上传之前的版本为 null */
+  content_hash: string | null;
+  /** 相对基准版本的变更（VersionChanges JSON）；旧版本为 null，首次查看时补算 */
+  changes: string | null;
 }
 
 export function publicVersion(db: Db, v: VersionRow, current: number | null) {
@@ -54,6 +59,8 @@ export function publicVersion(db: Db, v: VersionRow, current: number | null) {
     pageCount: v.page_count,
     assetCount: (JSON.parse(v.assets) as unknown[]).length,
     status: v.status,
+    /** 相对基准版本改了多少（页面 / 组件 / Token / 切图）；旧版本没有记录时为 null */
+    changes: v.changes ? summarize(JSON.parse(v.changes) as VersionChanges) : null,
     current: v.number === current,
     createdAt: v.created_at,
   };

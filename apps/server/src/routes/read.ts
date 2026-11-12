@@ -11,6 +11,7 @@ import { notFound } from "../errors";
 import type { DesignReader } from "../reader";
 import type { VersionIndex } from "../indexer";
 import { loadDesign, type DesignRow } from "./projects";
+import { resolveChangedIn } from "../changes";
 
 type VersionParams = { id: string; v: string };
 
@@ -47,8 +48,17 @@ export function readRoutes(app: FastifyInstance, ctx: AppContext, reader: Design
     const { version, idx } = await open(req, req.params);
     return {
       version: version.number,
-      pages: idx.pages.map(({ blob: _b, ...p }) => p),
+      pages: idx.pages.map(({ blob: _b, contentHash: _h, uses: _u, changedIn, ...p }) => ({
+        ...p,
+        changedIn: resolveChangedIn({ changedIn }, version.number) ?? null,
+      })),
     };
+  });
+
+  // 这个版本相对基准版本改了什么（页面 / 组件 / Token / 切图）
+  app.get<{ Params: VersionParams }>("/api/v1/designs/:id/versions/:v/changes", async (req) => {
+    const { version } = await open(req, req.params);
+    return { version: version.number, changes: await reader.changesOf(version) };
   });
 
   app.get<{ Params: VersionParams & { pageId: string } }>("/api/v1/designs/:id/versions/:v/pages/:pageId", async (req) => {
@@ -59,7 +69,13 @@ export function readRoutes(app: FastifyInstance, ctx: AppContext, reader: Design
 
   app.get<{ Params: VersionParams }>("/api/v1/designs/:id/versions/:v/components", async (req) => {
     const { version, idx } = await open(req, req.params);
-    return { version: version.number, components: idx.components.map(({ blob: _b, ...c }) => c) };
+    return {
+      version: version.number,
+      components: idx.components.map(({ blob: _b, contentHash: _h, uses: _u, changedIn, ...c }) => ({
+        ...c,
+        changedIn: resolveChangedIn({ changedIn }, version.number) ?? null,
+      })),
+    };
   });
 
   app.get<{ Params: VersionParams }>("/api/v1/designs/:id/versions/:v/tokens", async (req) => {

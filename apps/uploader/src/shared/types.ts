@@ -52,17 +52,40 @@ export interface UploadRequest {
   note: string;
 }
 
+/** 这次实际传了多少（增量上传只传服务端没有的页面与切图） */
+export interface UploadStats {
+  mode: "incremental" | "whole";
+  sentBytes: number;
+  totalBytes: number;
+  sentParts: number;
+  totalParts: number;
+  sentAssets: number;
+  totalAssets: number;
+}
+
+/** 服务端返回的版本变更摘要（相对基准版本） */
+export interface ChangeSummary {
+  base: number | null;
+  pages: { added: number; modified: number; removed: number; renamed: number; moved: number };
+  components: { added: number; modified: number; removed: number; renamed: number; moved: number };
+  tokens: number;
+  assets: { added: number; removed: number };
+}
+
 export interface UploadResult {
   duplicate: boolean;
   version: number;
   designId: string;
   url: string;
+  changes: ChangeSummary | null;
+  stats: UploadStats;
 }
 
 export interface UploadProgress {
   sent: number;
   total: number;
-  phase: "uploading" | "verifying";
+  /** analyzing：本地拆页、算哈希；uploading：传文件；verifying：服务端校验与建索引 */
+  phase: "analyzing" | "uploading" | "verifying";
 }
 
 export interface UploaderApi {

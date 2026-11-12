@@ -135,6 +135,11 @@ const MIGRATIONS: string[] = [
     created_at INTEGER NOT NULL
   );
   `,
+  // 增量上传与页面级变更记录：整版内容指纹（判重）、相对基准版本的变更（JSON）
+  `
+  ALTER TABLE versions ADD COLUMN content_hash TEXT;
+  ALTER TABLE versions ADD COLUMN changes TEXT;
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

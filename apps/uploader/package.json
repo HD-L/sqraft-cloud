@@ -13,7 +13,10 @@
     "dist": "pnpm build && electron-builder --mac --arm64 --publish never"
   },
   "devDependencies": {
+    "@sqraft-cloud/shared": "workspace:*",
+    "@sqraft/core": "workspace:*",
     "@types/node": "22.20.5",
+    "@types/yauzl": "2.10.3",
     "@vitejs/plugin-vue": "5.2.4",
     "electron": "45.1.0",
     "electron-builder": "26.18.0",
@@ -21,6 +24,7 @@
     "typescript": "5.9.3",
     "vite": "6.4.5",
     "vue": "3.5.44",
-    "vue-tsc": "2.2.8"
+    "vue-tsc": "2.2.8",
+    "yauzl": "3.2.0"
   }
 }

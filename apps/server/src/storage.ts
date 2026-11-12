@@ -1,10 +1,15 @@
 /**
- * 内容寻址的文件仓库：`blobs/<sha256 前两位>/<sha256>`。同一份字节只存一次，
- * 多个设计稿版本共用同一批切图，更新一版只多占改动的部分。
+ * 内容寻址的文件仓库：`blobs/<sha256 前两位>/<sha256>`。同一份内容只存一次，
+ * 多个设计稿版本共用同一批切图与页面，更新一版只多占改动的部分。
+ *
+ * - 切图等原始文件：名字 = 文件字节的 SHA-256；
+ * - JSON（索引、按页拆分的节点）：名字 = **未压缩** JSON 文本的 SHA-256，内容 gzip 存放。
+ *   这样上传客户端不用复现服务端的 gzip 字节，只按规范 JSON 算哈希就能判断服务端有没有。
+ *   里程碑 4 之前写入的 JSON 以 gzip 字节命名，仍可正常读取。
  */
 
 import { createReadStream } from "node:fs";
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -60,11 +65,40 @@ export class BlobStore {
 
   /** 存 JSON（gzip 压缩），用于索引与按页拆分的节点数据。 */
   putJson(value: unknown): Promise<string> {
-    return this.putBuffer(gzipSync(Buffer.from(JSON.stringify(value))));
+    return this.putJsonText(JSON.stringify(value));
+  }
+
+  /** 存一段 JSON 文本：以文本哈希命名、gzip 存放。`hash` 已算好时直接传入。 */
+  async putJsonText(text: string, hash = createHash("sha256").update(text).digest("hex")): Promise<string> {
+    if (await this.has(hash)) return hash;
+    const tmp = this.tmpPath();
+    await writeFile(tmp, gzipSync(Buffer.from(text)));
+    await this.adopt(tmp, hash);
+    return hash;
   }
 
   async getJson<T>(hash: string): Promise<T> {
-    return JSON.parse(gunzipSync(await readFile(this.path(hash))).toString("utf8")) as T;
+    return JSON.parse(await this.getText(hash)) as T;
+  }
+
+  /** 读 JSON 文本；兼容没压缩的内容（按 gzip 魔数判断）。 */
+  async getText(hash: string): Promise<string> {
+    const buf = await readFile(this.path(hash));
+    return (buf[0] === 0x1f && buf[1] === 0x8b ? gunzipSync(buf) : buf).toString("utf8");
+  }
+
+  /** 刷新修改时间：增量上传判定「服务端已有」的文件，在提交前不会被孤儿回收删掉。 */
+  async touch(hash: string): Promise<void> {
+    const now = new Date();
+    await utimes(this.path(hash), now, now).catch(() => undefined);
+  }
+
+  async size(hash: string): Promise<number | null> {
+    try {
+      return (await stat(this.path(hash))).size;
+    } catch {
+      return null;
+    }
   }
 
   /** 读开头若干字节（嗅探图片格式与尺寸用）。 */

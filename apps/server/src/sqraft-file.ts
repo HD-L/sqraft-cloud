@@ -16,7 +16,8 @@ import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
 import yauzl from "yauzl";
 import { CURRENT_FORMAT_VERSION, type DocState } from "@sqraft/core";
-import { buildIndex } from "./indexer";
+import { versionFingerprint } from "@sqraft-cloud/shared";
+import { buildIndex, type IndexBase, type VersionIndex } from "./indexer";
 import { HttpError } from "./errors";
 import { sha256File, type BlobStore } from "./storage";
 
@@ -36,8 +37,10 @@ export interface IngestResult {
   assets: AssetRef[];
   nodeCount: number;
   pageCount: number;
-  /** 按页索引（见 indexer.ts） */
-  indexBlob: string;
+  /** 按页索引（见 indexer.ts），还没存进仓库：生成版本时要先标上变更记录 */
+  index: VersionIndex;
+  /** 整版内容指纹（见 shared/versionFingerprint） */
+  contentHash: string;
 }
 
 export interface IngestLimits {
@@ -136,7 +139,7 @@ interface DocShape {
   nodes?: unknown;
 }
 
-export async function ingestSqraft(file: string, store: BlobStore, limits: IngestLimits = DEFAULT_LIMITS): Promise<IngestResult> {
+export async function ingestSqraft(file: string, store: BlobStore, limits: IngestLimits = DEFAULT_LIMITS, base?: IndexBase): Promise<IngestResult> {
   const { size } = await stat(file);
   const fileSha256 = await sha256File(file);
   const zip = await openZip(file);
@@ -213,7 +216,17 @@ export async function ingestSqraft(file: string, store: BlobStore, limits: Inges
   }
   const pageCount = (parsed.rootIds as unknown[]).filter((id) => typeof id === "string" && nodes[id]?.type === "page").length;
   const assets = adopted.filter((a) => a.name.startsWith("assets/"));
-  const indexBlob = await store.putJson(await buildIndex(parsed as unknown as DocState, assets, store));
+  const doc2 = parsed as unknown as DocState;
+  const built = await buildIndex(doc2, assets, store, base);
+  const order = new Map(doc2.rootIds.map((id, i) => [id, i]));
+  const contentHash = versionFingerprint({
+    formatVersion,
+    tokens: doc2.tokens,
+    parts: [...built.index.pages, ...built.index.components]
+      .map((e) => ({ rootId: e.id, hash: e.blob }))
+      .sort((a, b) => order.get(a.rootId)! - order.get(b.rootId)!),
+    assets: assets.map((a) => ({ name: a.name, hash: a.blob })),
+  });
 
   return {
     fileSha256,
@@ -224,6 +237,7 @@ export async function ingestSqraft(file: string, store: BlobStore, limits: Inges
     assets,
     nodeCount,
     pageCount,
-    indexBlob,
+    index: built.index,
+    contentHash,
   };
 }

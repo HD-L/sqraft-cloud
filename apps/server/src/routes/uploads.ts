@@ -7,6 +7,8 @@
  * 3. `GET /api/v1/uploads/:id` 查询进度（断线后续传用）
  * 4. `POST /api/v1/uploads/:id/complete` → 校验 .sqraft、收录资源、生成新版本；
  *    与当前版本内容完全相同则不生成新版本（`duplicate: true`）
+ *
+ * 只传改动部分的增量上传见 commits.ts；两条路生成的版本完全一样（都记录页面级变更）。
  * 5. `DELETE /api/v1/uploads/:id` 取消
  */
 
@@ -22,7 +24,9 @@ import { requireWriter, type Principal } from "../auth";
 import { newId } from "../crypto";
 import { badRequest, conflict, HttpError, notFound } from "../errors";
 import { ingestSqraft } from "../sqraft-file";
-import { loadDesign, publicDesign, publicVersion, type DesignRow, type VersionRow } from "./projects";
+import type { DesignReader } from "../reader";
+import { commitVersion } from "../versions";
+import { loadDesign, publicDesign, publicVersion, type DesignRow } from "./projects";
 
 export const CHUNK_SIZE = 8 * 1024 * 1024;
 const MAX_CHUNK = 64 * 1024 * 1024;
@@ -47,7 +51,7 @@ async function fileSize(path: string): Promise<number> {
   }
 }
 
-export function uploadRoutes(app: FastifyInstance, ctx: AppContext): void {
+export function uploadRoutes(app: FastifyInstance, ctx: AppContext, reader: DesignReader): void {
   const { db, store, config } = ctx;
 
   const loadUpload = (p: Principal, id: string): UploadRow => {
@@ -161,7 +165,8 @@ export function uploadRoutes(app: FastifyInstance, ctx: AppContext): void {
 
     let result;
     try {
-      result = await ingestSqraft(path, store);
+      const design = db.prepare("SELECT * FROM designs WHERE id = ?").get(u.design_id) as DesignRow;
+      result = await ingestSqraft(path, store, undefined, await reader.currentBase(design));
     } catch (error) {
       if (error instanceof HttpError) {
         audit(db, p, req.ip, { action: "design.upload", target: u.design_id, result: "failed", detail: { reason: error.message } });
@@ -172,40 +177,19 @@ export function uploadRoutes(app: FastifyInstance, ctx: AppContext): void {
       db.prepare("DELETE FROM uploads WHERE id = ?").run(u.id);
     }
 
-    const outcome = db.transaction(() => {
-      const d = db.prepare("SELECT * FROM designs WHERE id = ?").get(u.design_id) as DesignRow;
-      const current = d.current_version
-        ? (db.prepare("SELECT * FROM versions WHERE design_id = ? AND number = ?").get(d.id, d.current_version) as VersionRow)
-        : undefined;
-      if (current && current.file_sha256 === result.fileSha256) return { design: d, version: current, duplicate: true };
-      const next = ((db.prepare("SELECT MAX(number) AS n FROM versions WHERE design_id = ?").get(d.id) as { n: number | null }).n ?? 0) + 1;
-      const now = Date.now();
-      const version: VersionRow = {
-        design_id: d.id,
-        number: next,
-        note: u.note,
-        uploader_id: p.user.id,
-        file_sha256: result.fileSha256,
-        size: result.size,
-        format_version: result.formatVersion,
-        doc_blob: result.docBlob,
-        manifest_blob: result.manifestBlob,
-        assets: JSON.stringify(result.assets),
-        node_count: result.nodeCount,
-        page_count: result.pageCount,
-        index_blob: result.indexBlob,
-        status: "ready",
-        created_at: now,
-      };
-      db.prepare(
-        `INSERT INTO versions (design_id, number, note, uploader_id, file_sha256, size, format_version, doc_blob, manifest_blob,
-                               assets, node_count, page_count, index_blob, status, created_at)
-         VALUES (@design_id, @number, @note, @uploader_id, @file_sha256, @size, @format_version, @doc_blob, @manifest_blob,
-                 @assets, @node_count, @page_count, @index_blob, @status, @created_at)`,
-      ).run(version);
-      db.prepare("UPDATE designs SET current_version = ?, updated_at = ? WHERE id = ?").run(next, now, d.id);
-      return { design: { ...d, current_version: next, updated_at: now }, version, duplicate: false };
-    })();
+    const outcome = await commitVersion(ctx, reader, p.user.id, u.design_id, {
+      note: u.note,
+      fileSha256: result.fileSha256,
+      size: result.size,
+      formatVersion: result.formatVersion,
+      docBlob: result.docBlob,
+      manifestBlob: result.manifestBlob,
+      assets: result.assets,
+      nodeCount: result.nodeCount,
+      pageCount: result.pageCount,
+      index: result.index,
+      contentHash: result.contentHash,
+    });
 
     audit(db, p, req.ip, {
       action: "design.upload",

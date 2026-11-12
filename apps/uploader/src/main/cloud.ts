@@ -1,27 +1,21 @@
 /**
- * 与私有云通信（只在主进程里）：服务校验、浏览器登录（授权码 + PKCE）、项目 / 设计稿、分块上传。
+ * 与私有云通信（只在主进程里）：服务校验、浏览器登录（授权码 + PKCE）、项目 / 设计稿、上传。
+ *
+ * 上传优先走增量：本地拆页、只传服务端没有的页面与切图；服务端不支持时退回整包分块上传。
  */
 
 import { shell } from "electron";
 import { createHash, randomBytes } from "node:crypto";
-import { open } from "node:fs/promises";
 import { hostname } from "node:os";
-import type { CloudUser, Design, Project, UploadProgress } from "../shared/types";
+import type { CloudUser, Design, Project } from "../shared/types";
+import { CloudError, request } from "./http";
+
+export { CloudError } from "./http";
+export { uploadFile, type UploadOutcome } from "./upload";
 
 export const CLIENT_ID = "sqraft-uploader";
 export const REDIRECT_URI = "sqraft-uploader://oauth/callback";
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
-
-export class CloudError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-    readonly data?: Record<string, unknown>,
-  ) {
-    super(message);
-  }
-}
 
 /** 规范化用户输入的地址：补协议、去掉末尾斜杠与路径。 */
 export function normalizeServer(input: string): string {
@@ -34,38 +28,6 @@ export function normalizeServer(input: string): string {
 export function isInsecure(server: string): boolean {
   const url = new URL(server);
   return url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-}
-
-async function request<T>(server: string, token: string | null, method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
-  const h: Record<string, string> = { ...headers };
-  if (token) h.authorization = `Bearer ${token}`;
-  let payload: string | Uint8Array | undefined;
-  if (body instanceof Uint8Array) {
-    payload = body;
-    h["content-type"] = "application/octet-stream";
-  } else if (body !== undefined) {
-    payload = JSON.stringify(body);
-    h["content-type"] = "application/json";
-  }
-  let res: Response;
-  try {
-    res = await fetch(`${server}${path}`, { method, headers: h, body: payload, redirect: "error" });
-  } catch (error) {
-    throw new CloudError(0, "network", `连不上私有云：${(error as Error).message}`);
-  }
-  const text = await res.text();
-  let data: Record<string, unknown> = {};
-  try {
-    data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-  } catch {
-    if (!res.ok) throw new CloudError(res.status, "bad_response", `私有云返回了意外的内容（HTTP ${res.status}）`);
-  }
-  if (!res.ok) {
-    const err = (data.error ?? {}) as { code?: string; message?: string } | string;
-    if (typeof err === "string") throw new CloudError(res.status, err, String(data.error_description ?? err), data);
-    throw new CloudError(res.status, err.code ?? "error", err.message ?? `请求失败（HTTP ${res.status}）`, data);
-  }
-  return data as T;
 }
 
 /** 连接前校验：确实是 Sqraft 私有云，且 API 版本兼容（U2）。 */
@@ -183,46 +145,3 @@ export async function createDesign(server: string, token: string, projectId: str
   return (await request<{ design: Design }>(server, token, "POST", `/api/v1/projects/${encodeURIComponent(projectId)}/designs`, { name })).design;
 }
 
-/** 分块上传（U5、U6）：8 MB 一块，偏移不一致时按服务端偏移续传，可取消。 */
-export async function uploadFile(
-  server: string,
-  token: string,
-  designId: string,
-  path: string,
-  note: string,
-  onProgress: (p: UploadProgress) => void,
-  signal: AbortSignal,
-): Promise<{ duplicate: boolean; version: number }> {
-  const fh = await open(path, "r");
-  try {
-    const { size } = await fh.stat();
-    const start = await request<{ uploadId: string; chunkSize: number }>(server, token, "POST", `/api/v1/designs/${encodeURIComponent(designId)}/uploads`, {
-      size,
-      note,
-    });
-    const id = start.uploadId;
-    let offset = 0;
-    while (offset < size) {
-      if (signal.aborted) {
-        await request(server, token, "DELETE", `/api/v1/uploads/${id}`).catch(() => undefined);
-        throw new CloudError(0, "aborted", "已取消上传");
-      }
-      const length = Math.min(start.chunkSize, size - offset);
-      const buf = Buffer.alloc(length);
-      await fh.read(buf, 0, length, offset);
-      try {
-        const res = await request<{ received: number }>(server, token, "PUT", `/api/v1/uploads/${id}`, buf, { "upload-offset": String(offset) });
-        offset = res.received;
-      } catch (error) {
-        const received = (error as CloudError).data?.received;
-        if (error instanceof CloudError && error.code === "offset_mismatch" && typeof received === "number") offset = received;
-        else throw error;
-      }
-      onProgress({ sent: offset, total: size, phase: offset < size ? "uploading" : "verifying" });
-    }
-    const done = await request<{ duplicate: boolean; version: { number: number } }>(server, token, "POST", `/api/v1/uploads/${id}/complete`, {});
-    return { duplicate: done.duplicate, version: done.version.number };
-  } finally {
-    await fh.close();
-  }
-}
