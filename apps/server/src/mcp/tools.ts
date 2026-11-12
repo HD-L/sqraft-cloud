@@ -34,7 +34,9 @@ export const TOOLS: ToolInfo[] = [
   },
   {
     name: "list_designs",
-    description: "列出设计稿（id、名称、当前版本、页面数、更新时间）。可按项目筛选、按名称搜索。拿到设计稿 id 后用 list_pages 看页面。",
+    description:
+      "列出设计稿（id、名称、状态 draft 草稿 / review 评审中 / published 已发布、当前版本、页面数、更新时间）。可按项目筛选、按名称搜索。" +
+      "开发时优先用已发布的稿子；拿到设计稿 id 后用 list_pages 看页面。",
     inputSchema: {
       type: "object",
       properties: { projectId: str("只看这个项目；省略则列出所有有权限的项目里的设计稿"), query: str("按名称模糊搜索") },
@@ -306,11 +308,7 @@ export class McpTools {
     const { db } = this.ctx;
     switch (name) {
       case "list_projects": {
-        const rows = (
-          p.user.is_admin === 1
-            ? db.prepare("SELECT * FROM projects ORDER BY name").all()
-            : db.prepare("SELECT pr.* FROM projects pr JOIN members m ON m.project_id = pr.id WHERE m.user_id = ? ORDER BY pr.name").all(p.user.id)
-        ) as Array<{ id: string; name: string; archived_at: number | null }>;
+        const rows = db.prepare("SELECT * FROM projects ORDER BY name").all() as Array<{ id: string; name: string; archived_at: number | null }>;
         const projects = rows
           .map((r) => ({ r, role: projectRole(db, p, r.id) }))
           .filter((x) => x.role)
@@ -343,6 +341,7 @@ export class McpTools {
             return {
               id: d.id,
               name: d.name,
+              status: d.status,
               projectId: d.project_id,
               projectName: d.project_name,
               currentVersion: d.current_version,

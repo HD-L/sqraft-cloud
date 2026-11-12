@@ -22,6 +22,9 @@ describe("项目权限", () => {
     const api = client(server.app, admin);
     await api.put(`/api/v1/admin/projects/${projectId}/members/${viewer.id}`, { role: "viewer" });
     await api.put(`/api/v1/admin/projects/${projectId}/members/${editor.id}`, { role: "editor" });
+    // 团队角色默认对所有项目生效；在另一个项目里单独设为「看不到」
+    await api.put(`/api/v1/admin/projects/${otherProjectId}/members/${viewer.id}`, { role: "none" });
+    await api.put(`/api/v1/admin/projects/${otherProjectId}/members/${editor.id}`, { role: "none" });
 
     const asEditor = client(server.app, editor.session);
     const created = await asEditor.post(`/api/v1/projects/${projectId}/designs`, { name: "首页" });

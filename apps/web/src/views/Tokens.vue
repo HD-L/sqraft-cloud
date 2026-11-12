@@ -85,11 +85,15 @@ onMounted(() => void load().catch((e) => (error.value = (e as Error).message)));
 
 <template>
   <div class="page">
-    <h1>MCP 接入</h1>
-    <p class="muted">
-      让 Claude Code、Cursor 等 AI 编码助手通过 MCP 只读访问你有权限的设计稿：页面布局、Token、组件和切图。
-      令牌继承你的项目权限，可再限定到部分项目。
-    </p>
+    <div class="page-head">
+      <div>
+        <h1>MCP 令牌</h1>
+        <div class="sub">
+          让 Claude Code、Cursor 等 AI 编码助手通过 MCP 只读访问你有权限的设计稿：页面布局、Token、组件和切图。
+          令牌继承你的项目权限，可再限定到部分项目。
+        </div>
+      </div>
+    </div>
 
     <div class="card">
       <h2 style="margin-top: 0">1. 创建令牌</h2>
@@ -131,7 +135,7 @@ onMounted(() => void load().catch((e) => (error.value = (e as Error).message)));
     </div>
 
     <h2>我的令牌</h2>
-    <table class="card" style="padding: 0">
+    <div class="table-wrap"><table>
       <thead>
         <tr><th>名称</th><th>用途</th><th>令牌</th><th>范围</th><th>到期</th><th>最近使用</th><th></th></tr>
       </thead>
@@ -145,11 +149,11 @@ onMounted(() => void load().catch((e) => (error.value = (e as Error).message)));
           <td>{{ t.lastUsedAt ? `${formatTime(t.lastUsedAt)} · ${t.lastUsedIp}` : "从未使用" }}</td>
           <td>
             <span v-if="t.revoked" class="tag red">已吊销</span>
-            <button v-else class="danger" @click="revoke(t)">吊销</button>
+            <button v-else class="link danger" @click="revoke(t)">吊销</button>
           </td>
         </tr>
         <tr v-if="!tokens.length"><td colspan="7" class="muted">还没有令牌</td></tr>
       </tbody>
-    </table>
+    </table></div>
   </div>
 </template>

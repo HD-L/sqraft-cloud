@@ -33,7 +33,7 @@ async function submit() {
 </script>
 
 <template>
-  <div class="page" style="max-width: 420px">
+  <div class="page" style="max-width: 460px; margin: 40px auto">
     <h1>修改密码</h1>
     <p v-if="session.user?.mustChangePassword" class="notice">首次登录，请先把初始密码改成你自己的密码。</p>
     <form class="card" @submit.prevent="submit">

@@ -34,6 +34,8 @@ export interface Config {
   trashDays: number;
   /** Prometheus /metrics 的访问令牌；不设置则不开放 /metrics */
   metricsToken: string | null;
+  /** 网页「下载上传客户端」指向的地址（安装包或发布页） */
+  uploaderUrl: string;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -68,5 +70,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webDir: env.SQRAFT_WEB_DIR ? resolve(env.SQRAFT_WEB_DIR) : null,
     trashDays: int(env.SQRAFT_TRASH_DAYS, 30, "SQRAFT_TRASH_DAYS"),
     metricsToken: env.SQRAFT_METRICS_TOKEN || null,
+    uploaderUrl: env.SQRAFT_UPLOADER_URL || "https://github.com/HD-L/sqraft-cloud/releases/latest",
   };
 }

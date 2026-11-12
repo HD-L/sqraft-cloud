@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 
 export type Db = Database.Database;
 
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: string[] = [
   `
   CREATE TABLE users (
     id TEXT PRIMARY KEY,
@@ -139,6 +139,64 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE versions ADD COLUMN content_hash TEXT;
   ALTER TABLE versions ADD COLUMN changes TEXT;
+  `,
+  // 团队协作：团队角色（项目里可单独覆盖，none = 看不到）、项目简介、设计稿状态、评论、通知、最近浏览
+  `
+  ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'viewer';
+  ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+  ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';
+  UPDATE users SET role = 'admin' WHERE is_admin = 1;
+
+  CREATE TABLE members_v2 (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('editor', 'viewer', 'none')),
+    PRIMARY KEY (project_id, user_id)
+  );
+  INSERT INTO members_v2 (project_id, user_id, role) SELECT project_id, user_id, role FROM members;
+  DROP TABLE members;
+  ALTER TABLE members_v2 RENAME TO members;
+  CREATE INDEX members_user ON members(user_id);
+  -- 升级前普通用户只能看到被分配的项目：没分配的记为「看不到」，保持原有可见范围
+  INSERT INTO members (project_id, user_id, role)
+    SELECT p.id, u.id, 'none' FROM projects p CROSS JOIN users u
+    WHERE u.is_admin = 0 AND NOT EXISTS (SELECT 1 FROM members m WHERE m.project_id = p.id AND m.user_id = u.id);
+
+  ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT '';
+  ALTER TABLE projects ADD COLUMN created_by TEXT;
+  ALTER TABLE designs ADD COLUMN status TEXT NOT NULL DEFAULT 'published';
+
+  CREATE TABLE comments (
+    id TEXT PRIMARY KEY,
+    design_id TEXT NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    body TEXT NOT NULL,
+    version INTEGER,
+    page_id TEXT,
+    created_at INTEGER NOT NULL,
+    deleted_at INTEGER
+  );
+  CREATE INDEX comments_design ON comments(design_id, created_at);
+
+  CREATE TABLE notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    actor_id TEXT,
+    text TEXT NOT NULL,
+    link TEXT,
+    read_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX notifications_user ON notifications(user_id, created_at);
+
+  CREATE TABLE recent_views (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    design_id TEXT NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    viewed_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, design_id)
+  );
+  CREATE INDEX recent_views_user ON recent_views(user_id, viewed_at);
   `,
 ];
 

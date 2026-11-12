@@ -14,9 +14,15 @@ export class ApiError extends Error {
   }
 }
 
+export type TeamRole = "admin" | "editor" | "viewer";
+export type DesignStatus = "draft" | "review" | "published";
+
 export interface User {
   id: string;
   username: string;
+  displayName: string;
+  email: string;
+  role: TeamRole;
   isAdmin: boolean;
   mustChangePassword: boolean;
   disabled: boolean;
@@ -71,6 +77,34 @@ export async function logout(): Promise<void> {
   await api("POST", "/auth/logout").catch(() => undefined);
   session.user = null;
   session.csrf = "";
+}
+
+export const ROLE_LABEL: Record<TeamRole, string> = { admin: "管理员", editor: "编辑者", viewer: "查看者" };
+export const ROLE_TAG: Record<TeamRole, string> = { admin: "orange", editor: "", viewer: "green" };
+export const STATUS_LABEL: Record<DesignStatus, string> = { draft: "草稿", review: "评审中", published: "已发布" };
+export const STATUS_TAG: Record<DesignStatus, string> = { draft: "yellow", review: "", published: "green" };
+
+/** 「刚刚 / 5 分钟前 / 昨天 / 11/06」 */
+export function relativeTime(ms: number | null | undefined): string {
+  if (!ms) return "—";
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  if (diff < 2 * 86_400_000) return "昨天";
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
+  const d = new Date(ms);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const md = `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+  return sameYear ? md : `${d.getFullYear()}/${md}`;
+}
+
+const PALETTE = ["#2f5cff", "#22b07d", "#f5a623", "#e5484d", "#8b5cf6", "#0ea5e9", "#ec4899", "#14b8a6"];
+/** 由字符串稳定地挑一个颜色（头像、项目封面） */
+export function colorOf(seed: string): string {
+  let h = 0;
+  for (const ch of seed) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return PALETTE[h % PALETTE.length];
 }
 
 export function formatTime(ms: number | null | undefined): string {

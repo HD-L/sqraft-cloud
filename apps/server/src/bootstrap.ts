@@ -14,10 +14,10 @@ export async function ensureAdmin({ db, config }: AppContext): Promise<Bootstrap
   const existing = db.prepare("SELECT id FROM users WHERE username = ?").get(config.adminUser) as { id: string } | undefined;
   const hash = await hashPassword(config.adminPassword);
   if (existing) {
-    db.prepare("UPDATE users SET is_admin = 1, disabled_at = NULL, password_hash = ? WHERE id = ?").run(hash, existing.id);
+    db.prepare("UPDATE users SET is_admin = 1, role = 'admin', disabled_at = NULL, password_hash = ? WHERE id = ?").run(hash, existing.id);
   } else {
     db.prepare(
-      "INSERT INTO users (id, username, password_hash, is_admin, must_change_password, created_at) VALUES (?, ?, ?, 1, 0, ?)",
+      "INSERT INTO users (id, username, password_hash, is_admin, role, must_change_password, created_at) VALUES (?, ?, ?, 1, 'admin', 0, ?)",
     ).run(newId(), config.adminUser, hash, Date.now());
   }
   return "created";

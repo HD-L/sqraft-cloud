@@ -5,22 +5,24 @@
 import type { FastifyInstance } from "fastify";
 import type { AppContext } from "../app";
 import { audit, type AuditRow } from "../audit";
-import { publicUser, requireAdmin, type UserRow } from "../auth";
-import { checkPasswordPolicy, generatePassword, hashPassword, newId } from "../crypto";
-import { badRequest, conflict, notFound } from "../errors";
+import { publicUser, requireAdmin, TEAM_ROLES, type TeamRole, type UserRow } from "../auth";
+import { newId } from "../crypto";
+import { badRequest, notFound } from "../errors";
+import { nameOf, notify } from "../notify";
 import { publicToken } from "./tokens";
+import { createMember, resetPassword, setDisabled, setRole } from "./team";
 
-const USERNAME = /^[A-Za-z0-9._@-]{2,64}$/;
-
-interface ProjectRow {
+export interface ProjectRow {
   id: string;
   name: string;
   archived_at: number | null;
   created_at: number;
+  description: string;
+  created_by: string | null;
 }
 
 export function publicProject(p: ProjectRow) {
-  return { id: p.id, name: p.name, archived: p.archived_at !== null, createdAt: p.created_at };
+  return { id: p.id, name: p.name, description: p.description ?? "", archived: p.archived_at !== null, createdAt: p.created_at };
 }
 
 function csvCell(value: unknown): string {
@@ -29,9 +31,6 @@ function csvCell(value: unknown): string {
 }
 
 export function adminRoutes(app: FastifyInstance, { db }: AppContext): void {
-  const activeAdmins = () =>
-    (db.prepare("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND disabled_at IS NULL").get() as { n: number }).n;
-
   // ── 用户 ──
   app.get("/api/v1/admin/users", async (req) => {
     requireAdmin(req);
@@ -39,80 +38,32 @@ export function adminRoutes(app: FastifyInstance, { db }: AppContext): void {
     return { users: rows.map(publicUser) };
   });
 
-  app.post<{ Body: { username?: unknown; password?: unknown; isAdmin?: unknown } }>("/api/v1/admin/users", async (req) => {
+  app.post<{ Body: Record<string, unknown> }>("/api/v1/admin/users", async (req) => {
     const p = requireAdmin(req);
-    const { username, password, isAdmin } = req.body ?? {};
-    if (typeof username !== "string" || !USERNAME.test(username)) {
-      throw badRequest("用户名 2–64 位，只能包含字母、数字和 . _ @ -");
-    }
-    if (db.prepare("SELECT 1 FROM users WHERE username = ?").get(username)) throw conflict("用户名已存在", "username_taken");
-    let initial: string | null = null;
-    if (password !== undefined) {
-      const problem = checkPasswordPolicy(password);
-      if (problem) throw badRequest(problem, "weak_password");
-    } else {
-      initial = generatePassword();
-    }
-    const user: UserRow = {
-      id: newId(),
-      username,
-      password_hash: await hashPassword((password as string | undefined) ?? (initial as string)),
-      is_admin: isAdmin === true ? 1 : 0,
-      must_change_password: 1,
-      disabled_at: null,
-      failed_logins: 0,
-      locked_until: null,
-      created_at: Date.now(),
-    };
-    db.prepare(
-      "INSERT INTO users (id, username, password_hash, is_admin, must_change_password, created_at) VALUES (?, ?, ?, ?, 1, ?)",
-    ).run(user.id, user.username, user.password_hash, user.is_admin, user.created_at);
-    audit(db, p, req.ip, { action: "user.create", target: user.id, detail: { username, isAdmin: user.is_admin === 1 } });
-    return { user: publicUser(user), ...(initial ? { initialPassword: initial } : {}) };
+    const { user, initialPassword } = await createMember(db, p, req.ip, req.body ?? {});
+    return { user: publicUser(user), ...(initialPassword ? { initialPassword } : {}) };
   });
 
-  app.patch<{ Params: { id: string }; Body: { disabled?: unknown; isAdmin?: unknown; resetPassword?: unknown } }>(
+  app.patch<{ Params: { id: string }; Body: { disabled?: unknown; isAdmin?: unknown; role?: unknown; resetPassword?: unknown } }>(
     "/api/v1/admin/users/:id",
     async (req) => {
       const p = requireAdmin(req);
       const user = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id) as UserRow | undefined;
       if (!user) throw notFound("用户不存在");
-      const { disabled, isAdmin, resetPassword } = req.body ?? {};
-      const self = user.id === p.user.id;
-      let newPassword: string | null = null;
-
+      const { disabled, isAdmin, role, resetPassword: reset } = req.body ?? {};
       if (disabled !== undefined) {
         if (typeof disabled !== "boolean") throw badRequest("disabled 需要布尔值");
-        if (disabled && self) throw badRequest("不能停用自己");
-        if (disabled && user.is_admin === 1 && activeAdmins() <= 1) throw badRequest("至少要保留一个可用的管理员");
-        db.transaction(() => {
-          db.prepare("UPDATE users SET disabled_at = ? WHERE id = ?").run(disabled ? Date.now() : null, user.id);
-          if (disabled) {
-            // 停用 = 立刻踢下线 + 吊销全部令牌（G1）
-            db.prepare("DELETE FROM sessions WHERE user_id = ?").run(user.id);
-            db.prepare("UPDATE tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").run(Date.now(), user.id);
-          }
-        })();
-        audit(db, p, req.ip, { action: disabled ? "user.disable" : "user.enable", target: user.id });
+        setDisabled(db, p, req.ip, user, disabled);
       }
-      if (isAdmin !== undefined) {
+      if (role !== undefined) {
+        if (!TEAM_ROLES.includes(role as TeamRole)) throw badRequest("角色只能是 admin、editor 或 viewer");
+        setRole(db, p, req.ip, db.prepare("SELECT * FROM users WHERE id = ?").get(user.id) as UserRow, role as TeamRole);
+      } else if (isAdmin !== undefined) {
         if (typeof isAdmin !== "boolean") throw badRequest("isAdmin 需要布尔值");
-        if (!isAdmin && self) throw badRequest("不能取消自己的管理员身份");
-        if (!isAdmin && user.is_admin === 1 && activeAdmins() <= 1) throw badRequest("至少要保留一个可用的管理员");
-        db.prepare("UPDATE users SET is_admin = ? WHERE id = ?").run(isAdmin ? 1 : 0, user.id);
-        audit(db, p, req.ip, { action: "user.set_admin", target: user.id, detail: { isAdmin } });
+        // 兼容旧接口：取消管理员时降为编辑者
+        setRole(db, p, req.ip, db.prepare("SELECT * FROM users WHERE id = ?").get(user.id) as UserRow, isAdmin ? "admin" : "editor");
       }
-      if (resetPassword === true) {
-        newPassword = generatePassword();
-        const hash = await hashPassword(newPassword);
-        db.transaction(() => {
-          db.prepare(
-            "UPDATE users SET password_hash = ?, must_change_password = 1, failed_logins = 0, locked_until = NULL WHERE id = ?",
-          ).run(hash, user.id);
-          db.prepare("DELETE FROM sessions WHERE user_id = ?").run(user.id);
-        })();
-        audit(db, p, req.ip, { action: "user.reset_password", target: user.id });
-      }
+      const newPassword = reset === true ? await resetPassword(db, p, req.ip, user) : null;
       const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id) as UserRow;
       return { user: publicUser(updated), ...(newPassword ? { initialPassword: newPassword } : {}) };
     },
@@ -135,8 +86,8 @@ export function adminRoutes(app: FastifyInstance, { db }: AppContext): void {
     const p = requireAdmin(req);
     const { name } = req.body ?? {};
     if (typeof name !== "string" || !name.trim() || name.length > 100) throw badRequest("项目名称必填，最多 100 个字符");
-    const row: ProjectRow = { id: newId(), name: name.trim(), archived_at: null, created_at: Date.now() };
-    db.prepare("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)").run(row.id, row.name, row.created_at);
+    const row: ProjectRow = { id: newId(), name: name.trim(), archived_at: null, created_at: Date.now(), description: "", created_by: p.user.id };
+    db.prepare("INSERT INTO projects (id, name, created_by, created_at) VALUES (?, ?, ?, ?)").run(row.id, row.name, p.user.id, row.created_at);
     audit(db, p, req.ip, { action: "project.create", target: row.id, detail: { name: row.name } });
     return { project: publicProject(row) };
   });
@@ -175,9 +126,15 @@ export function adminRoutes(app: FastifyInstance, { db }: AppContext): void {
     async (req) => {
       const p = requireAdmin(req);
       const { role } = req.body ?? {};
-      if (role !== "editor" && role !== "viewer") throw badRequest("角色只能是 editor（编辑者）或 viewer（查看者）");
-      if (!db.prepare("SELECT 1 FROM projects WHERE id = ?").get(req.params.id)) throw notFound("项目不存在");
+      if (role !== "editor" && role !== "viewer" && role !== "none") {
+        throw badRequest("角色只能是 editor（编辑者）、viewer（查看者）或 none（看不到这个项目）");
+      }
+      const project = db.prepare("SELECT name FROM projects WHERE id = ?").get(req.params.id) as { name: string } | undefined;
+      if (!project) throw notFound("项目不存在");
       if (!db.prepare("SELECT 1 FROM users WHERE id = ?").get(req.params.userId)) throw notFound("用户不存在");
+      if (role !== "none") {
+        notify(db, req.params.userId, "project_access", p.user.id, `${nameOf(p.user)} 把你加入了项目「${project.name}」（${role === "editor" ? "编辑者" : "查看者"}）`, `/projects/${req.params.id}`);
+      }
       db.prepare(
         `INSERT INTO members (project_id, user_id, role) VALUES (?, ?, ?)
          ON CONFLICT (project_id, user_id) DO UPDATE SET role = excluded.role`,

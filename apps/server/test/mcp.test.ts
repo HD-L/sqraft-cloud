@@ -231,6 +231,7 @@ describe("MCP 只读工具", () => {
     const api = client(server.app, admin);
     await upload(api, designId, makeSqraft({ title: "第二版", assets: { "assets/aaaa1111.png": PNG } }));
     const user = await createUser(server.app, admin, "dev");
+    await api.put(`/api/v1/admin/projects/${projectId}/members/${user.id}`, { role: "none" });
     const devToken = (await client(server.app, user.session).post("/api/v1/tokens", { name: "t", purpose: "mcp", expiresInDays: 30 })).json().token;
     const dev = await mcp(devToken);
     expect((await dev.call("list_designs")).json().designs).toEqual([]);

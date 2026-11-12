@@ -59,6 +59,7 @@ SQRAFT_ADMIN_USER=admin SQRAFT_ADMIN_PASSWORD='至少8位' SQRAFT_INSECURE_HTTP=
 | `SQRAFT_TOKEN_MAX_DAYS` | `0`（不限） | 令牌最长有效期；设置后不再允许「不过期」令牌 |
 | `SQRAFT_AUDIT_DAYS` | `180` | 审计日志保留天数 |
 | `SQRAFT_MCP_RATE` | `60` | 每个令牌每分钟最多的 MCP 工具调用次数 |
+| `SQRAFT_UPLOADER_URL` | GitHub 发布页 | 网页「下载上传客户端」指向的地址（可换成内网的安装包地址） |
 | `SQRAFT_WEB_DIR` | 自动 | 网页构建产物目录（镜像里是 `/app/web`） |
 | `SQRAFT_TRASH_DAYS` | `30` | 回收站保留天数，过期自动彻底删除 |
 | `SQRAFT_METRICS_TOKEN` | 无 | 设置后开放 Prometheus `/metrics`（Bearer 令牌访问） |
@@ -77,9 +78,18 @@ Docker 里：`docker compose exec -u node sqraft-cloud node server.mjs backup`�
 
 ## 网页
 
-浏览器打开服务地址即可：
+浏览器打开服务地址即可（界面名为「云设计」，左侧导航：项目、最近浏览、团队管理、人员管理、MCP 令牌、个人设置；
+管理员另有审计日志与系统维护）。顶栏可全局搜索项目、设计稿和成员，铃铛里是站内通知。
 
-- **看稿**：项目 → 设计稿 → 左侧页面列表（可搜索），中间是只读画布（可把当前页导出为 SVG）（用 Sqraft 自己的渲染器，效果与桌面端一致），
+- **项目**：卡片列表，可按「全部 / 我创建的」筛选、搜索、按更新时间或名称排序；管理员和编辑者可新建项目。
+  项目页列出设计稿（状态、创建者、版本、评论数），可按状态筛选；管理员可在「成员权限」里给某个人单独设权限、归档项目。
+- **设计稿状态**：草稿 / 评审中 / 已发布，编辑者在设计稿页切换；新建的设计稿默认是草稿。
+- **评论与通知**：能看到设计稿的人都能评论（记下当时的版本与页面），输入 `@` 提到成员；
+  被 @、自己创建或参与过的设计稿有新评论、被加入团队或项目时收到站内通知。
+- **人员管理**：管理员直接建账号（生成初始密码，对方首次登录必须修改）、改角色、重置密码、移除（停用账号，可恢复）。
+- **团队管理**：团队名称与简介、成员与内容概况。
+
+- **看稿**：项目 → 设计稿 → 右侧页面列表（可搜索），中间是只读画布（可把当前页导出为 SVG）（用 Sqraft 自己的渲染器，效果与桌面端一致），
   顶部切换版本；滚轮平移、⌘/Ctrl + 滚轮或触控板捏合缩放。地址栏带版本与页面，链接发给别人能直接打开同一页。
   大稿按页加载，不下载整份 `.sqraft`。
 - **版本变更**：每个版本显示相对上一版改了什么（修改 / 新增 / 删除 / 改名 / 挪动了哪些页面，组件与 Token 的变动），
@@ -87,6 +97,19 @@ Docker 里：`docker compose exec -u node sqraft-cloud node server.mjs backup`�
 - **上传**：编辑者可在设计稿页面直接上传新版本（分块、可取消），也可回滚到旧版本。
 - **MCP 接入**：创建令牌，复制 Claude Code / Cursor / VS Code 的配置。
 - **管理后台**（系统管理员）：用户、项目与成员、审计日志（可导出 CSV）、系统概览与回收站。
+
+## 角色与权限
+
+每个成员有一个团队角色，默认对所有项目生效：
+
+| 团队角色 | 能做什么 |
+|---|---|
+| 管理员 | 管理成员、团队信息、所有项目与设计稿（含归档、回收站、审计日志） |
+| 编辑者 | 新建项目，上传和更新设计稿、改状态、回滚版本，评论 |
+| 查看者 | 查看设计稿、评论 |
+
+项目里可以单独覆盖某个人的权限：可编辑、只读或「看不到」（比如对外包同事隐藏项目）。
+从旧版本升级时，原来的普通用户会被设为查看者，并对他原本没被分配的项目设为「看不到」，可见范围保持不变。
 
 ## Mac 上传客户端（apps/uploader）
 
@@ -149,16 +172,23 @@ claude mcp add --transport http sqraft https://design.example.com/mcp --header "
 |---|---|---|
 | `GET /info` | 服务名、版本、API 版本、支持的 `.sqraft` 格式版本 | 公开 |
 | `POST /auth/login`、`POST /auth/logout` | 登录（连续 5 次错误锁定 15 分钟）/ 登出 | 公开 |
-| `GET /me`、`POST /me/password` | 当前用户；改密码（首次登录必须先改） | 登录 |
+| `GET /me`、`PATCH /me`、`POST /me/password` | 当前用户；改姓名 / 邮箱；改密码（首次登录必须先改） | 登录 |
+| `GET /team`、`PATCH /team` | 团队信息与概况；修改名称与简介 | 登录 / 管理员 |
+| `GET /team/members`、`POST /team/members`、`PATCH /team/members/:id`、`DELETE /team/members/:id`、`POST …/restore` | 成员列表；建账号（返回初始密码）、改角色 / 资料 / 重置密码、移除与恢复 | 登录 / 管理员 |
+| `GET /me/recent`、`GET /search?q=`、`GET /client` | 最近浏览；全局搜索（项目、设计稿、成员）；上传客户端下载地址 | 登录 |
+| `GET/POST /designs/:id/comments`、`DELETE /comments/:id` | 评论（`@用户名` 通知被提到的人）；作者或管理员删除 | 查看者 |
+| `GET /notifications`、`POST /notifications/read` | 站内通知；标记已读（不传 ids 即全部） | 网页会话 |
 | `GET/POST /tokens`、`DELETE /tokens/:id` | 令牌：用途 `mcp`（只读）或 `uploader`（可上传），可限定项目，明文只返回一次 | 网页会话 |
-| `GET /projects`、`GET /projects/:id/designs` | 自己有权限的项目与设计稿 | 登录 |
-| `POST /projects/:id/designs` | 新建设计稿 | 编辑者 |
-| `GET/PATCH/DELETE /designs/:id` | 查看 / 改名 / 删除（进回收站） | 查看者 / 编辑者 |
+| `GET /projects`、`GET /projects/:id`、`GET /projects/:id/designs` | 自己能看到的项目（简介、创建者、设计稿数、更新时间、我的角色）与设计稿 | 登录 |
+| `POST /projects`、`PATCH /projects/:id` | 新建项目；改名称与描述 | 团队编辑者 / 项目编辑者 |
+| `GET /projects/:id/access` | 每个成员在项目里的团队角色、覆盖与实际权限 | 管理员 |
+| `POST /projects/:id/designs` | 新建设计稿（默认草稿） | 编辑者 |
+| `GET/PATCH/DELETE /designs/:id` | 查看 / 改名、改状态（draft / review / published）/ 删除（进回收站） | 查看者 / 编辑者 |
 | `GET /designs/:id/versions`、`POST /designs/:id/rollback` | 版本历史（带变更数量）；回滚当前版本 | 查看者 / 编辑者 |
 | `GET /designs/:id/versions/:v/changes` | 这个版本相对上一版的页面级变更明细 | 查看者 |
 | `POST /designs/:id/uploads` → `PUT /uploads/:id` → `POST /uploads/:id/complete` | 整包分块、可续传上传（头 `Upload-Offset`，每块 ≤ 64 MB） | 编辑者 |
 | `POST /designs/:id/blobs/check` → `PUT /designs/:id/blobs/:hash` → `POST /designs/:id/commits` | 增量上传：问缺哪些、只传缺的、按清单生成版本 | 编辑者 |
-| `/admin/users`、`/admin/projects`、`/admin/projects/:id/members/:userId` | 用户、项目、成员管理 | 系统管理员 |
+| `/admin/users`、`/admin/projects`、`PUT/DELETE /admin/projects/:id/members/:userId` | 用户、项目（归档）、项目权限覆盖（`editor` / `viewer` / `none`） | 系统管理员 |
 | `GET /admin/audit?user=&action=&from=&to=&format=csv` | 审计日志查询与 CSV 导出 | 系统管理员 |
 | `GET /designs/:id/versions/:v/pages`、`…/pages/:pageId` | 页面列表；单页节点（`:v` 为版本号或 `current`） | 查看者 |
 | `GET /designs/:id/versions/:v/components`、`…/tokens`、`…/assets/:assetId` | 组件、Token、切图 | 查看者 |
@@ -220,6 +250,8 @@ apps/server/            Node.js 服务（Fastify + better-sqlite3）
   src/changes.ts        版本之间的页面级差异
   src/versions.ts       生成新版本（判重、标记变更）
   src/routes/commits.ts 增量上传接口
+  src/routes/team.ts    团队、成员、个人资料、最近浏览、全局搜索
+  src/routes/comments.ts 评论与站内通知
   src/reader.ts         设计稿读取（版本解析、按页加载、LRU 缓存、切图签名）
   src/mcp/              MCP 端点与只读工具（复用 @sqraft/ai-tools）
   src/app.ts            组装应用：凭据解析、CSRF、HTTPS 强制、安全响应头、错误格式

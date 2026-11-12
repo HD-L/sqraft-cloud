@@ -158,11 +158,11 @@ onBeforeUnmount(() => {
   <div ref="host" class="viewer">
     <canvas ref="canvas" @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp" />
     <div class="tools">
-      <button @click="zoomAt(vp.width / 2, vp.height / 2, vp.zoom / 1.25)">−</button>
+      <button class="sm" @click="zoomAt(vp.width / 2, vp.height / 2, vp.zoom / 1.25)">−</button>
       <span class="pct">{{ zoomPct }}%</span>
-      <button @click="zoomAt(vp.width / 2, vp.height / 2, vp.zoom * 1.25)">+</button>
-      <button @click="fit">适应窗口</button>
-      <button @click="actualSize">100%</button>
+      <button class="sm" @click="zoomAt(vp.width / 2, vp.height / 2, vp.zoom * 1.25)">+</button>
+      <button class="sm" @click="fit">适应窗口</button>
+      <button class="sm" @click="actualSize">100%</button>
     </div>
     <div v-if="loading" class="status">加载中…</div>
     <div v-else-if="error" class="status error">{{ error }}</div>
@@ -198,7 +198,9 @@ canvas:active {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 6px;
+  padding: 4px;
+  box-shadow: var(--shadow);
+  font-size: 12px;
 }
 .pct {
   min-width: 48px;
