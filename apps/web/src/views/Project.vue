@@ -62,7 +62,7 @@ async function create() {
   modalError.value = "";
   try {
     const res = await api<{ design: Design }>("POST", `/projects/${props.id}/designs`, { name: newName.value.trim() });
-    await router.push({ path: `/designs/${res.design.id}`, query: { upload: "1" } });
+    await router.push(`/designs/${res.design.id}`);
   } catch (e) {
     modalError.value = (e as Error).message;
   }
@@ -200,9 +200,9 @@ onMounted(load);
     <Modal v-if="creating" title="新建设计稿" @close="creating = false">
       <form @submit.prevent="create">
         <label class="field">名称<input v-model="newName" maxlength="200" placeholder="例如：首页改版 V3" required autofocus /></label>
-        <p class="muted" style="font-size: 12px; margin-top: 0">建好后在详情页上传 .sqraft；也可以用上传客户端发布。新设计稿默认是「草稿」。</p>
+        <p class="muted" style="font-size: 12px; margin-top: 0">建好后用上传客户端选择这个设计稿发布 .sqraft（客户端里也能直接新建）。新设计稿默认是「草稿」。</p>
         <p v-if="modalError" class="error">{{ modalError }}</p>
-        <button class="primary" style="width: 100%">创建并上传</button>
+        <button class="primary" style="width: 100%">创建</button>
       </form>
     </Modal>
 

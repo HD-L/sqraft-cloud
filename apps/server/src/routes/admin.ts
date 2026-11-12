@@ -10,7 +10,7 @@ import { newId } from "../crypto";
 import { badRequest, notFound } from "../errors";
 import { nameOf, notify } from "../notify";
 import { publicToken } from "./tokens";
-import { createMember, resetPassword, setDisabled, setRole } from "./team";
+import { createMember, resetPassword, setDisabled, setRole } from "./members";
 
 export interface ProjectRow {
   id: string;

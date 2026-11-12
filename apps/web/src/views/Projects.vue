@@ -6,7 +6,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api, colorOf, relativeTime, session } from "../api";
-import { openClient, ui } from "../ui";
+import { openClient } from "../ui";
 import Modal from "../components/Modal.vue";
 
 interface Project {
@@ -74,7 +74,7 @@ onMounted(load);
     <div class="page-head">
       <div>
         <h1>项目</h1>
-        <div class="sub">{{ ui.teamName }} · 共 {{ projects.length }} 个项目</div>
+        <div class="sub">共 {{ projects.length }} 个项目</div>
       </div>
       <div class="actions">
         <button @click="openClient()">⬇ 下载上传客户端</button>

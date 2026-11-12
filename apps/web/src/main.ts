@@ -13,7 +13,6 @@ const router = createRouter({
     { path: "/recent", component: () => import("./views/Recent.vue") },
     { path: "/projects/:id", component: () => import("./views/Project.vue"), props: true },
     { path: "/designs/:id", component: () => import("./views/Design.vue"), props: true },
-    { path: "/team", component: () => import("./views/Team.vue") },
     { path: "/members", component: () => import("./views/Members.vue") },
     { path: "/tokens", component: () => import("./views/Tokens.vue") },
     { path: "/settings", component: () => import("./views/Settings.vue") },

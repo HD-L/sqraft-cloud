@@ -1,12 +1,12 @@
 <script setup lang="ts">
 /**
- * 应用外壳：左侧深色导航（工作台 / 协作 / 接入 / 其他）、顶栏（全局搜索、通知），主区域放各页面。
+ * 应用外壳：左侧深色导航（工作台 / 成员 / 接入 / 其他）、顶栏（全局搜索、通知），主区域放各页面。
  * 登录页与授权页不显示外壳。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, logout, relativeTime, ROLE_LABEL, session } from "./api";
-import { loadTeam, openClient, ui } from "./ui";
+import { openClient, ui } from "./ui";
 import Avatar from "./components/Avatar.vue";
 import Modal from "./components/Modal.vue";
 
@@ -23,13 +23,7 @@ const nav = computed(() => [
       { to: "/recent", icon: "🕘", text: "最近浏览" },
     ],
   },
-  {
-    label: "协作",
-    items: [
-      { to: "/team", icon: "🏢", text: "团队管理" },
-      { to: "/members", icon: "👥", text: "人员管理" },
-    ],
-  },
+  { label: "成员", items: [{ to: "/members", icon: "👥", text: "人员管理" }] },
   { label: "接入", items: [{ to: "/tokens", icon: "🔑", text: "MCP 令牌" }] },
   {
     label: "其他",
@@ -111,10 +105,7 @@ async function readAll() {
 
 let poll = 0;
 watch(showShell, (v) => {
-  if (v) {
-    void loadTeam();
-    void loadNotes();
-  }
+  if (v) void loadNotes();
 }, { immediate: true });
 watch(() => route.fullPath, () => {
   searchOpen.value = false;
@@ -133,7 +124,6 @@ async function signOut() {
   <div v-if="showShell" class="app">
     <aside class="sidebar">
       <RouterLink to="/" class="logo"><span class="mark">云</span>云设计</RouterLink>
-      <div class="team">{{ ui.teamName }}</div>
       <nav>
         <template v-for="g in nav" :key="g.label">
           <div class="group">{{ g.label }}</div>
@@ -226,7 +216,7 @@ async function signOut() {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 18px 18px 2px;
+  padding: 18px 18px 10px;
   color: #fff;
   font-weight: 700;
   font-size: 16px;
@@ -239,14 +229,6 @@ async function signOut() {
   display: grid;
   place-items: center;
   font-size: 13px;
-}
-.team {
-  padding: 0 18px 8px 53px;
-  font-size: 12px;
-  color: #6b7290;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 nav {
   flex: 1;

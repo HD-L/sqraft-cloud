@@ -117,33 +117,3 @@ export function formatBytes(n: number): string {
   if (n < 1024 ** 3) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 ** 3).toFixed(2)} GB`;
 }
-
-/** 分块上传 .sqraft（8 MB 一块，偏移不一致时按服务端偏移续传）。 */
-export async function uploadDesign(
-  designId: string,
-  file: File,
-  note: string,
-  onProgress: (sent: number, total: number) => void,
-  signal?: AbortSignal,
-): Promise<{ duplicate: boolean; version: { number: number } }> {
-  const start = await api<{ uploadId: string; chunkSize: number }>("POST", `/designs/${designId}/uploads`, { size: file.size, note });
-  let offset = 0;
-  while (offset < file.size) {
-    if (signal?.aborted) {
-      await api("DELETE", `/uploads/${start.uploadId}`).catch(() => undefined);
-      throw new ApiError(0, "aborted", "已取消上传");
-    }
-    try {
-      const res = await api<{ received: number }>("PUT", `/uploads/${start.uploadId}`, file.slice(offset, offset + start.chunkSize), {
-        "upload-offset": String(offset),
-      });
-      offset = res.received;
-    } catch (error) {
-      const received = (error as { data?: { received?: number } }).data?.received;
-      if (error instanceof ApiError && error.code === "offset_mismatch" && typeof received === "number") offset = received;
-      else throw error;
-    }
-    onProgress(offset, file.size);
-  }
-  return api("POST", `/uploads/${start.uploadId}/complete`);
-}

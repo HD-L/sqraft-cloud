@@ -20,7 +20,7 @@ import { adminRoutes } from "./routes/admin";
 import { projectRoutes } from "./routes/projects";
 import { uploadRoutes } from "./routes/uploads";
 import { commitRoutes } from "./routes/commits";
-import { teamRoutes } from "./routes/team";
+import { memberRoutes } from "./routes/members";
 import { commentRoutes } from "./routes/comments";
 import { readRoutes } from "./routes/read";
 import { oauthRoutes } from "./routes/oauth";
@@ -121,7 +121,7 @@ export async function buildApp(
   projectRoutes(app, ctx);
   uploadRoutes(app, ctx, reader);
   commitRoutes(app, ctx, reader);
-  teamRoutes(app, ctx);
+  memberRoutes(app, ctx);
   commentRoutes(app, ctx);
   oauthRoutes(app, ctx);
   opsRoutes(app, ctx);

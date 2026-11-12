@@ -20,7 +20,7 @@ beforeEach(async () => {
 });
 afterEach(async () => server.close());
 
-describe("团队与成员", () => {
+describe("成员与权限", () => {
   it("团队角色默认对所有项目生效；项目里可覆盖；编辑者可建项目、查看者不行", async () => {
     const p1 = (await admin.post("/api/v1/projects", { name: "官网", description: "官网改版" })).json().project;
     const p2 = (await admin.post("/api/v1/projects", { name: "App" })).json().project;
@@ -64,14 +64,14 @@ describe("团队与成员", () => {
     expect((await admin.delete(`/api/v1/team/members/${me.id}`)).statusCode).toBe(400);
   });
 
-  it("团队信息、个人资料、上传客户端入口", async () => {
-    expect((await admin.patch("/api/v1/team", { name: "鹏图科技", description: "设计团队" })).statusCode).toBe(200);
+  it("个人资料、上传客户端入口；没有团队设置接口", async () => {
     const v = await member("val", "viewer");
-    expect((await v.api.get("/api/v1/team")).json()).toMatchObject({ team: { name: "鹏图科技" }, stats: { members: 2, admins: 1 } });
-    expect((await v.api.patch("/api/v1/team", { name: "x" })).statusCode).toBe(403);
     expect((await v.api.patch("/api/v1/me", { displayName: "小瓦", email: "bad" })).statusCode).toBe(400);
     expect((await v.api.patch("/api/v1/me", { displayName: "小瓦" })).json().user.displayName).toBe("小瓦");
     expect((await v.api.get("/api/v1/client")).json().downloadUrl).toContain("releases");
+    expect((await admin.get("/api/v1/team")).statusCode).toBe(404);
+    const invited = (await v.api.get("/api/v1/notifications")).json().notifications[0];
+    expect(invited).toMatchObject({ kind: "invited", text: expect.stringContaining("为你开通了账号，角色：查看者") });
   });
 });
 

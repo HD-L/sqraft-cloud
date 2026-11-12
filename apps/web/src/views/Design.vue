@@ -1,14 +1,15 @@
 <script setup lang="ts">
 /**
- * 设计稿详情（C3–C5、D1、W1–W3）：只读画布预览 + 右侧面板（页面 / 评论 / 变更），顶部切换版本、回滚、改状态、上传新版本。
- * 地址栏记住版本与页面（?v=&page=），链接发给别人能直接打开同一页；?upload=1 打开时直接弹出上传。
+ * 设计稿详情（C3–C5、D1、W1–W3）：只读画布预览 + 右侧面板（页面 / 评论 / 变更），顶部切换版本、回滚、改状态。
+ * 新版本只通过上传客户端发布，网页不提供上传。
+ * 地址栏记住版本与页面（?v=&page=），链接发给别人能直接打开同一页。
  */
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import CanvasViewer from "../components/CanvasViewer.vue";
 import Avatar from "../components/Avatar.vue";
-import Modal from "../components/Modal.vue";
-import { api, formatBytes, relativeTime, STATUS_LABEL, STATUS_TAG, uploadDesign, type DesignStatus } from "../api";
+import { api, formatBytes, relativeTime, STATUS_LABEL, STATUS_TAG, type DesignStatus } from "../api";
+import { openClient } from "../ui";
 
 const props = defineProps<{ id: string }>();
 const route = useRoute();
@@ -173,46 +174,6 @@ async function rollback(n: number) {
   }
 }
 
-// ── 上传新版本 ──
-const uploadOpen = ref(false);
-const fileInput = ref<HTMLInputElement>();
-const note = ref("");
-const progress = ref<{ sent: number; total: number } | null>(null);
-const uploadMsg = ref("");
-let abort: AbortController | null = null;
-
-async function upload(file: File) {
-  uploadMsg.value = "";
-  abort = new AbortController();
-  progress.value = { sent: 0, total: file.size };
-  try {
-    const res = await uploadDesign(props.id, file, note.value.trim(), (sent, total) => (progress.value = { sent, total }), abort.signal);
-    uploadMsg.value = res.duplicate ? `内容与当前版本 v${res.version.number} 相同，没有生成新版本` : `已发布 v${res.version.number}`;
-    note.value = "";
-    await loadDesign();
-    go({ v: undefined, page: undefined, upload: undefined });
-    await loadPages();
-  } catch (e) {
-    uploadMsg.value = (e as Error).message;
-  } finally {
-    progress.value = null;
-    abort = null;
-    if (fileInput.value) fileInput.value.value = "";
-  }
-}
-
-function onFile(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  if (file) void upload(file);
-}
-
-function closeUpload() {
-  if (progress.value) return;
-  uploadOpen.value = false;
-  uploadMsg.value = "";
-  if (route.query.upload) go({ upload: undefined });
-}
-
 // ── 评论 ──
 const comments = ref<Comment[]>([]);
 const draft = ref("");
@@ -277,7 +238,6 @@ watch(version, () => void loadPages());
 onMounted(async () => {
   await loadDesign();
   await loadPages();
-  if (route.query.upload && canEdit.value) uploadOpen.value = true;
   await loadComments().catch(() => undefined);
   members.value = (await api<{ members: Array<{ username: string; displayName: string }> }>("GET", "/team/members").catch(() => ({ members: [] }))).members;
 });
@@ -301,7 +261,7 @@ onMounted(async () => {
         </template>
         <span class="spacer" />
         <a v-if="version && pageId" class="button sm" :href="`/api/v1/designs/${id}/versions/${version}/nodes/${encodeURIComponent(pageId)}/svg`" title="把当前页面导出为自包含的 SVG（图片内嵌）">导出 SVG</a>
-        <button v-if="canEdit" class="sm primary" @click="uploadOpen = true">⬆ 上传新版本</button>
+        <button v-if="canEdit" class="sm" title="新版本用上传客户端发布" @click="openClient()">⬆ 用客户端上传新版本</button>
       </div>
 
       <div v-if="versions.length" class="vbar">
@@ -327,8 +287,11 @@ onMounted(async () => {
       <div class="stage">
         <div v-if="design && !design.currentVersion" class="blank">
           <div class="big">🎨</div>
-          还没有上传任何版本{{ canEdit ? "" : "。" }}
-          <button v-if="canEdit" class="primary" style="margin-top: 12px" @click="uploadOpen = true">上传 .sqraft</button>
+          还没有上传任何版本
+          <template v-if="canEdit">
+            <span style="font-size: 13px; margin-top: 4px">用上传客户端选择这个设计稿，发布 .sqraft 文件</span>
+            <button class="primary" style="margin-top: 12px" @click="openClient()">⬇ 下载上传客户端</button>
+          </template>
         </div>
         <template v-else-if="version && pageId">
           <div class="pagebar">
@@ -429,23 +392,6 @@ onMounted(async () => {
       </aside>
     </div>
 
-    <Modal v-if="uploadOpen" title="上传新版本" @close="closeUpload">
-      <p class="muted" style="margin-top: 0; font-size: 13px">
-        选择 .sqraft 文件（Sketch 先用 sketch2sqraft 转换）。大稿建议用上传客户端，只传改动过的页面更快。
-      </p>
-      <label class="field">版本说明（可选）<input v-model="note" maxlength="500" placeholder="例如：首页改版、修正按钮颜色" :disabled="!!progress" /></label>
-      <input ref="fileInput" type="file" accept=".sqraft" hidden @change="onFile" />
-      <div v-if="progress" class="progress">
-        <div class="bar"><div :style="{ width: `${(progress.sent / progress.total) * 100}%` }" /></div>
-        <div class="row">
-          <span class="muted">{{ formatBytes(progress.sent) }} / {{ formatBytes(progress.total) }}{{ progress.sent === progress.total ? "，正在校验…" : "" }}</span>
-          <span class="spacer" />
-          <button class="sm" @click="abort?.abort()">取消</button>
-        </div>
-      </div>
-      <button v-else class="primary" style="width: 100%" @click="fileInput?.click()">选择文件并上传</button>
-      <p v-if="uploadMsg" class="muted">{{ uploadMsg }}</p>
-    </Modal>
   </div>
 </template>
 
@@ -729,17 +675,6 @@ onMounted(async () => {
 .clist .link {
   font-size: 13px;
   font-weight: 500;
-}
-.progress .bar {
-  height: 6px;
-  background: var(--border);
-  border-radius: 3px;
-  overflow: hidden;
-  margin-bottom: 8px;
-}
-.progress .bar div {
-  height: 100%;
-  background: var(--brand);
 }
 @media (max-width: 900px) {
   .body {

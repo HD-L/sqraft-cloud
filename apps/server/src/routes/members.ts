@@ -1,5 +1,5 @@
 /**
- * 团队与成员（E1–E5）、个人资料、最近浏览（B5）、全局搜索（F2）、上传客户端下载（F3）。
+ * 成员（E2–E5）、个人资料、最近浏览（B5）、全局搜索（F2）、上传客户端下载（F3）。单团队应用，没有「团队」本身的设置。
  *
  * 成员由管理员直接建账号（给初始密码，首次登录必须改密码），团队角色：管理员 / 编辑者 / 查看者。
  * 「移除成员」= 停用账号：立刻下线、吊销令牌，评论等历史记录保留；可以恢复。
@@ -18,7 +18,6 @@ import { publicDesign, type DesignRow } from "./projects";
 export const USERNAME = /^[A-Za-z0-9._@-]{2,64}$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const ROLE_LABEL: Record<TeamRole, string> = { admin: "管理员", editor: "编辑者", viewer: "查看者" };
-const DEFAULT_TEAM = { name: "我的团队", description: "" };
 
 function checkDisplayName(v: unknown): string {
   if (typeof v !== "string" || v.length > 50) throw badRequest("姓名最多 50 个字符");
@@ -36,11 +35,6 @@ function checkRole(v: unknown): TeamRole {
 }
 
 const activeAdmins = (db: Db) => (db.prepare("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND disabled_at IS NULL").get() as { n: number }).n;
-
-export function teamInfo(db: Db): { name: string; description: string } {
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'team'").get() as { value: string } | undefined;
-  return row ? { ...DEFAULT_TEAM, ...(JSON.parse(row.value) as object) } : DEFAULT_TEAM;
-}
 
 /** 建成员账号；没给密码就生成一个初始密码返回（只显示一次）。 */
 export async function createMember(
@@ -81,7 +75,7 @@ export async function createMember(
      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
   ).run(user.id, user.username, user.password_hash, user.is_admin, role, displayName, email, user.created_at);
   audit(db, p, ip, { action: "user.create", target: user.id, detail: { username, role } });
-  notify(db, user.id, "invited", p.user.id, `${nameOf(p.user)} 邀请你加入「${teamInfo(db).name}」，角色：${ROLE_LABEL[role]}`, "/");
+  notify(db, user.id, "invited", p.user.id, `${nameOf(p.user)} 为你开通了账号，角色：${ROLE_LABEL[role]}`, "/");
   return { user, initialPassword: initial };
 }
 
@@ -121,44 +115,12 @@ export async function resetPassword(db: Db, p: Principal, ip: string, user: User
   return pw;
 }
 
-export function teamRoutes(app: FastifyInstance, { db, config }: AppContext): void {
+export function memberRoutes(app: FastifyInstance, { db, config }: AppContext): void {
   const loadUser = (id: string) => {
     const u = db.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined;
     if (!u) throw notFound("成员不存在");
     return u;
   };
-
-  // ── 团队信息 ──
-  app.get("/api/v1/team", async (req) => {
-    requireUser(req);
-    const count = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
-    return {
-      team: teamInfo(db),
-      stats: {
-        members: count("SELECT COUNT(*) AS n FROM users WHERE disabled_at IS NULL"),
-        admins: count("SELECT COUNT(*) AS n FROM users WHERE disabled_at IS NULL AND is_admin = 1"),
-        projects: count("SELECT COUNT(*) AS n FROM projects WHERE archived_at IS NULL"),
-        designs: count("SELECT COUNT(*) AS n FROM designs WHERE deleted_at IS NULL"),
-      },
-    };
-  });
-
-  app.patch<{ Body: { name?: unknown; description?: unknown } }>("/api/v1/team", async (req) => {
-    const p = requireAdmin(req);
-    const team = { ...teamInfo(db) };
-    const { name, description } = req.body ?? {};
-    if (name !== undefined) {
-      if (typeof name !== "string" || !name.trim() || name.length > 50) throw badRequest("团队名称必填，最多 50 个字符");
-      team.name = name.trim();
-    }
-    if (description !== undefined) {
-      if (typeof description !== "string" || description.length > 200) throw badRequest("团队简介最多 200 个字符");
-      team.description = description.trim();
-    }
-    db.prepare("INSERT INTO settings (key, value) VALUES ('team', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(JSON.stringify(team));
-    audit(db, p, req.ip, { action: "team.update", detail: team });
-    return { team };
-  });
 
   // ── 成员 ──
   // 所有成员都能看到成员列表（评论里 @ 人要用）；管理员加 ?all=1 还能看到已移除的
