@@ -22,6 +22,7 @@ import { uploadRoutes } from "./routes/uploads";
 import { commitRoutes } from "./routes/commits";
 import { memberRoutes } from "./routes/members";
 import { commentRoutes } from "./routes/comments";
+import { reviewRoutes } from "./reviews";
 import { readRoutes } from "./routes/read";
 import { oauthRoutes } from "./routes/oauth";
 import { opsRoutes } from "./routes/ops";
@@ -123,6 +124,7 @@ export async function buildApp(
   commitRoutes(app, ctx, reader);
   memberRoutes(app, ctx);
   commentRoutes(app, ctx);
+  reviewRoutes(app, ctx);
   oauthRoutes(app, ctx);
   opsRoutes(app, ctx);
   readRoutes(app, ctx, reader);

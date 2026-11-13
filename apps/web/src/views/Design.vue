@@ -4,6 +4,8 @@
  * - 总览：全部画板按画布位置铺开（缩略图），单击选中、双击进入；
  * - 单页：只看一个画板，上一个 / 下一个翻页（← →），Esc 回总览；画布缩放与图层导航有快捷键（? 查看）。
  * 右侧面板是标注、切图、评论与版本变更。新版本只通过上传客户端发布，网页不提供上传。
+ * 状态只由评审动作驱动：顶栏按状态与身份给出「提交评审 / 通过 / 退回 / 撤回 / 直接发布 / 改回草稿」，
+ * 评论面板里评审事件与评论按时间混排，评论可标为已解决。
  * 地址栏记住版本、画板与视图（?v=&board=&mode=detail），链接发给别人能直接打开同一处。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
@@ -14,13 +16,18 @@ import SlicesPanel from "../components/SlicesPanel.vue";
 import OverviewCanvas from "../components/OverviewCanvas.vue";
 import { clearImages } from "../viewer/images";
 import Avatar from "../components/Avatar.vue";
-import { api, formatBytes, formatTime, relativeTime, STATUS_LABEL, STATUS_TAG, type DesignStatus } from "../api";
+import Modal from "../components/Modal.vue";
+import { api, ApiError, formatBytes, formatTime, relativeTime, session, STATUS_LABEL, STATUS_TAG, type DesignStatus } from "../api";
 import { confirmDialog, openClient, toast } from "../ui";
 import {
   ArrowLeft,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  CircleCheck,
+  CircleX,
+  ClipboardCheck,
   Download,
   FileDiff,
   Folder,
@@ -31,12 +38,15 @@ import {
   MessageSquare,
   PanelLeft,
   PanelRight,
+  Rocket,
   RotateCcw,
   Search,
   Send,
   SquareMousePointer,
   Trash2,
+  Undo2,
   Upload,
+  UserPen,
 } from "lucide-vue-next";
 import EmptyState from "../components/EmptyState.vue";
 
@@ -44,6 +54,21 @@ const props = defineProps<{ id: string }>();
 const route = useRoute();
 const router = useRouter();
 
+interface Person {
+  id: string;
+  displayName: string;
+}
+/** 进行中的一轮评审（只在评审中时有值） */
+interface OpenReview {
+  id: string;
+  /** 跟着评审中上传 / 回滚的版本变化 */
+  version: number | null;
+  note: string;
+  requestedBy: Person | null;
+  /** valid=false：评审人已停用或已看不到这个项目 */
+  reviewers: Array<Person & { valid: boolean }>;
+  createdAt: number;
+}
 interface Design {
   id: string;
   projectId: string;
@@ -52,6 +77,27 @@ interface Design {
   currentVersion: number | null;
   latestVersion: number | null;
   commentCount: number;
+  /** 最近一次通过评审（或直接发布）的版本；改回草稿后仍保留 */
+  approvedVersion: number | null;
+  approvedAt: number | null;
+  /** approvedVersion 有值而它为 null：评审功能上线前就已发布 */
+  approvedBy: Person | null;
+  openReview: OpenReview | null;
+  /** 当前用户能否通过 / 退回（服务端计算） */
+  canReview: boolean;
+  unresolvedCount: number;
+}
+type ReviewAction = "submit" | "approve" | "reject" | "withdraw" | "publish" | "unpublish" | "reviewers";
+/** 评审时间线上的一个事件（服务端已整理好） */
+interface ReviewEvent {
+  type: "submit" | "approve" | "reject" | "withdraw" | "publish_direct" | "unpublish" | "reviewers";
+  at: number;
+  actor: Person | null;
+  version: number | null;
+  note: string | null;
+  reviewId: string | null;
+  reviewers?: Person[];
+  byAdmin?: boolean;
 }
 type Counts = { added: number; modified: number; removed: number; renamed: number; moved: number };
 interface ChangeSummary {
@@ -106,6 +152,12 @@ interface Comment {
   pageId: string | null;
   createdAt: number;
   canDelete: boolean;
+  resolved: boolean;
+  resolvedAt: number | null;
+  resolvedBy: { id: string; username: string; displayName: string } | null;
+  /** 评审上线前已发布设计稿上的旧评论（已自动标为已解决） */
+  legacy: boolean;
+  canResolve: boolean;
 }
 
 const design = ref<Design | null>(null);
@@ -370,15 +422,200 @@ function toDetail() {
   if (id) openBoard(id);
 }
 
-async function setStatus(s: DesignStatus) {
+// ── 评审 ──
+const reviewEvents = ref<ReviewEvent[]>([]);
+const reviewBusy = ref(false);
+/** 状态下拉里能做的事：只有编辑者有 */
+const statusMenu = computed<Array<"submit" | "publish" | "withdraw" | "reviewers" | "resubmit" | "unpublish">>(() => {
+  const d = design.value;
+  if (!d || !canEdit.value) return [];
+  if (d.status === "draft") return ["submit", "publish"];
+  if (d.status === "review") return ["withdraw", "reviewers"];
+  return ["resubmit", "unpublish"];
+});
+/** 已发布后又上传了新版本 */
+const changedSincePublish = computed(() => {
+  const d = design.value;
+  return !!d && d.status === "published" && d.approvedVersion !== null && d.approvedVersion !== d.currentVersion;
+});
+const statusTitle = computed(() => {
+  const d = design.value;
+  if (!d) return "";
+  if (d.status === "review" && d.openReview) {
+    const r = d.openReview;
+    const who = r.requestedBy ? `${r.requestedBy.displayName} ` : "";
+    const names = r.reviewers.map((x) => x.displayName).join("、");
+    return `${who}提交评审 v${r.version ?? "—"}${names ? ` · 评审人 ${names}` : " · 未指定评审人，任一编辑者可评审"}`;
+  }
+  if (d.status === "published" && d.approvedVersion !== null) {
+    if (!d.approvedBy) return `v${d.approvedVersion} 在评审功能上线前已发布`;
+    return `${d.approvedBy.displayName} 于 ${formatTime(d.approvedAt)} 发布 v${d.approvedVersion}`;
+  }
+  return canEdit.value ? "修改状态" : "";
+});
+
+async function loadReviews() {
+  reviewEvents.value = (await api<{ events: ReviewEvent[] }>("GET", `/designs/${props.id}/reviews`).catch(() => ({ events: [] }))).events;
+}
+
+/** 发一个评审动作，成功返回 true；409（版本冲突、状态已变）时提示并刷新 */
+async function review(action: ReviewAction, body: { reviewers?: string[]; note?: string; version?: number } = {}, done?: string): Promise<boolean> {
   statusOpen.value = false;
+  if (reviewBusy.value) return false;
+  reviewBusy.value = true;
   try {
-    design.value = (await api<{ design: Design }>("PATCH", `/designs/${props.id}`, { status: s })).design;
-    toast.success(`状态已改为「${STATUS_LABEL[s]}」`);
+    design.value = (await api<{ design: Design }>("POST", `/designs/${props.id}/review`, { action, ...body })).design;
+    if (done) toast.success(done);
+    void loadReviews();
+    return true;
   } catch (e) {
     toast.error((e as Error).message);
+    if (e instanceof ApiError && e.status === 409) {
+      // 状态已被别人改过：弹窗里的操作不再适用，关掉免得一直 409
+      submitMode.value = null;
+      rejecting.value = false;
+      await loadDesign();
+      void loadReviews();
+    }
+    return false;
+  } finally {
+    reviewBusy.value = false;
   }
 }
+
+async function approve() {
+  const d = design.value;
+  if (!d?.currentVersion) return;
+  const v = d.currentVersion;
+  const n = unresolved.value;
+  if (n > 0 && !(await confirmDialog({ title: `还有 ${n} 条未解决评论，仍要通过？`, message: `通过后「${d.name}」v${v} 会变成已发布。`, confirmText: "仍要通过" }))) return;
+  await review("approve", { version: v }, `已通过 v${v}`);
+}
+
+async function publishDirect() {
+  statusOpen.value = false;
+  const d = design.value;
+  if (!d) return;
+  const ok = await confirmDialog({
+    title: `直接发布 v${d.currentVersion ?? "—"}？`,
+    message: "跳过评审直接变成已发布，评审记录里会标「未经评审」。",
+    confirmText: "直接发布",
+  });
+  if (ok) await review("publish", {}, "已发布（未经评审）");
+}
+
+async function withdraw() {
+  statusOpen.value = false;
+  if (await confirmDialog({ title: "撤回这次评审？", message: "设计稿会回到提交评审前的状态。", confirmText: "撤回" })) await review("withdraw", {}, "已撤回评审");
+}
+
+async function unpublish() {
+  statusOpen.value = false;
+  if (await confirmDialog({ title: "改回草稿？", message: "设计稿会变回草稿，之前通过的版本记录会保留。", confirmText: "改回草稿" })) await review("unpublish", {}, "已改回草稿");
+}
+
+// 提交评审 / 修改评审人 弹窗
+interface Candidate {
+  id: string;
+  username: string;
+  displayName: string;
+}
+const submitMode = ref<"submit" | "reviewers" | null>(null);
+const pickedReviewers = ref<string[]>([]);
+const submitNote = ref("");
+const reviewerQuery = ref("");
+const candidates = ref<Candidate[]>([]);
+const candidatesLoading = ref(false);
+const shownCandidates = computed(() => {
+  const q = reviewerQuery.value.trim().toLowerCase();
+  return candidates.value.filter((c) => !q || c.displayName.toLowerCase().includes(q) || c.username.toLowerCase().includes(q));
+});
+
+/** 可评审的人：服务端按「未停用且能看到这个项目」过滤好的成员 */
+async function loadCandidates() {
+  candidatesLoading.value = true;
+  try {
+    candidates.value = (await api<{ members: Candidate[] }>("GET", `/designs/${props.id}/reviewer-candidates`)).members;
+  } catch (e) {
+    toast.error((e as Error).message);
+  } finally {
+    candidatesLoading.value = false;
+  }
+}
+
+function openSubmit(mode: "submit" | "reviewers") {
+  statusOpen.value = false;
+  submitMode.value = mode;
+  submitNote.value = "";
+  reviewerQuery.value = "";
+  // 已失效的评审人（停用 / 看不到项目）不在候选里、取消不了勾选，不预选，保存时自然去掉
+  pickedReviewers.value = mode === "reviewers" ? (design.value?.openReview?.reviewers.filter((r) => r.valid).map((r) => r.id) ?? []) : [];
+  void loadCandidates();
+}
+
+/** 搜索框里按 Enter：勾选第一个还没选的匹配项，不提交表单 */
+function pickFirstMatch() {
+  if (!reviewerQuery.value.trim()) return;
+  const c = shownCandidates.value.find((x) => !pickedReviewers.value.includes(x.id));
+  if (c) pickedReviewers.value.push(c.id);
+}
+
+function toggleReviewer(id: string) {
+  const i = pickedReviewers.value.indexOf(id);
+  if (i >= 0) pickedReviewers.value.splice(i, 1);
+  else pickedReviewers.value.push(id);
+}
+
+async function confirmSubmit() {
+  if (submitMode.value === "reviewers") {
+    if (await review("reviewers", { reviewers: pickedReviewers.value }, "评审人已更新")) submitMode.value = null;
+    return;
+  }
+  const note = submitNote.value.trim();
+  const picked = pickedReviewers.value.length > 0;
+  if (await review("submit", { reviewers: pickedReviewers.value, ...(note ? { note } : {}) }, picked ? "已提交评审，评审人会收到通知" : "已提交评审")) submitMode.value = null;
+}
+
+// 退回弹窗：原因必填
+const rejecting = ref(false);
+const rejectReason = ref("");
+function openReject() {
+  rejectReason.value = "";
+  rejecting.value = true;
+}
+async function confirmReject() {
+  const reason = rejectReason.value.trim();
+  if (!reason) return;
+  const v = design.value?.currentVersion;
+  if (await review("reject", { note: reason }, v ? `已退回 v${v}` : "已退回")) rejecting.value = false;
+}
+
+/** 时间线上一个评审事件的文字 */
+function eventText(e: ReviewEvent): string {
+  const who = e.actor?.displayName ?? "有人";
+  const admin = e.byAdmin ? "（管理员）" : "";
+  const v = e.version ? ` v${e.version}` : "";
+  const names = (e.reviewers ?? []).map((r) => r.displayName).join("、");
+  switch (e.type) {
+    case "submit":
+      return `${who} 提交评审${v}${names ? ` · 评审人 ${names}` : ""}`;
+    case "approve":
+      return `${who}${admin} 通过了${v}`;
+    case "reject":
+      return `${who}${admin} 退回了${v}${e.note ? `：${e.note}` : ""}`;
+    case "withdraw":
+      return `${who} 撤回评审`;
+    case "publish_direct":
+      return `${who} 直接发布${v}（未经评审）`;
+    case "unpublish":
+      return `${who} 改回草稿`;
+    case "reviewers":
+      return names ? `${who} 修改评审人为 ${names}` : `${who} 清空了评审人`;
+    default:
+      return who;
+  }
+}
+const EVENT_ICON = { submit: ClipboardCheck, approve: CircleCheck, reject: CircleX, withdraw: Undo2, publish_direct: Rocket, unpublish: RotateCcw, reviewers: UserPen };
 
 async function rollback(n: number) {
   const ok = await confirmDialog({
@@ -390,6 +627,7 @@ async function rollback(n: number) {
   try {
     await api("POST", `/designs/${props.id}/rollback`, { version: n });
     await loadDesign();
+    void loadReviews();
     go({ v: undefined });
     toast.success(`当前版本已切回 v${n}`);
   } catch (e) {
@@ -458,6 +696,36 @@ async function removeComment(c: Comment) {
   }
 }
 
+/** 未解决评论数：评论加载好后以本地列表为准（标记 / 新增 / 删除后立即更新），否则用设计稿上的计数 */
+const unresolved = computed(() => (commentsLoading.value || commentsError.value ? (design.value?.unresolvedCount ?? 0) : comments.value.filter((c) => !c.resolved).length));
+/** 隐藏已解决的评论（默认开） */
+const hideResolved = ref(true);
+const resolvedCount = computed(() => comments.value.filter((c) => c.resolved).length);
+/** 已解决的评论默认折叠，点开看全文 */
+const expanded = reactive(new Set<string>());
+
+async function setResolved(c: Comment, resolved: boolean) {
+  try {
+    const res = await api<{ comment: Comment }>("POST", `/comments/${c.id}/resolve`, { resolved });
+    const i = comments.value.findIndex((x) => x.id === c.id);
+    if (i >= 0) comments.value[i] = res.comment;
+    expanded.delete(c.id);
+    if (resolved && hideResolved.value) toast.success("已标为已解决");
+  } catch (e) {
+    toast.error((e as Error).message);
+  }
+}
+
+/** 评论与评审事件按时间混排 */
+type FeedItem = { kind: "comment"; at: number; key: string; comment: Comment } | { kind: "event"; at: number; key: string; event: ReviewEvent };
+const feed = computed<FeedItem[]>(() => {
+  const items: FeedItem[] = [
+    ...comments.value.filter((c) => !hideResolved.value || !c.resolved).map((c) => ({ kind: "comment" as const, at: c.createdAt, key: `c${c.id}`, comment: c })),
+    ...reviewEvents.value.map((e, i) => ({ kind: "event" as const, at: e.at, key: `e${e.reviewId}-${e.type}-${i}`, event: e })),
+  ];
+  return items.sort((a, b) => a.at - b.at);
+});
+
 /** 把 @用户名 拆出来高亮 */
 function parts(body: string): Array<{ text: string; at: boolean }> {
   return body.split(/(@[A-Za-z0-9._-]{2,64})/g).filter(Boolean).map((text) => ({ text, at: text.startsWith("@") && members.value.some((m) => `@${m.username}` === text) }));
@@ -468,6 +736,15 @@ watch(pageId, () => {
   highlightIds.value = [];
   showHelp.value = false;
 });
+// 状态变了（刷新拿到别人改过的结果）：关掉不再适用的评审弹窗
+watch(
+  () => design.value?.status,
+  (s) => {
+    if (s !== "review") rejecting.value = false;
+    if (submitMode.value === "reviewers" && s !== "review") submitMode.value = null;
+    if (submitMode.value === "submit" && s === "review") submitMode.value = null;
+  },
+);
 // 单页视图默认看标注；回到总览时标注 / 切图没有对象，换回评论
 watch(
   mode,
@@ -487,6 +764,7 @@ onMounted(async () => {
   if (typeof route.query.page === "string") go({ board: route.query.page, mode: "detail", page: undefined });
   await loadDesign();
   // 评论与画板列表并行加载：评论不用等大稿的页面数据
+  void loadReviews();
   const commentsDone = loadComments()
     .catch((e) => (commentsError.value = (e as Error).message))
     .finally(() => (commentsLoading.value = false));
@@ -506,17 +784,34 @@ onMounted(async () => {
         <span class="slash">/</span>
         <strong class="truncate">{{ design?.name ?? "" }}</strong>
         <div v-if="design" class="pop-wrap">
-          <button class="status" :class="STATUS_TAG[design.status]" :disabled="!canEdit" :title="canEdit ? '修改状态' : ''" @click="statusOpen = !statusOpen">
-            <span class="sdot" />{{ STATUS_LABEL[design.status] }}<ChevronDown v-if="canEdit" :size="12" />
+          <button class="status" :class="STATUS_TAG[design.status]" :disabled="!statusMenu.length || reviewBusy" :title="statusTitle" @click="statusOpen = !statusOpen">
+            <span class="sdot" />{{ STATUS_LABEL[design.status] }}<ChevronDown v-if="statusMenu.length" :size="12" />
           </button>
           <div v-if="statusOpen" class="popover statusmenu">
-            <button v-for="s in (['draft', 'review', 'published'] as DesignStatus[])" :key="s" class="menu-item" @click="setStatus(s)">
-              <span class="tag dot" :class="STATUS_TAG[s]">{{ STATUS_LABEL[s] }}</span>
-            </button>
+            <template v-for="a in statusMenu" :key="a">
+              <button v-if="a === 'submit' || a === 'resubmit'" class="menu-item" @click="openSubmit('submit')"><ClipboardCheck :size="15" />{{ a === "submit" ? "提交评审…" : "重新提交评审…" }}</button>
+              <button v-else-if="a === 'publish'" class="menu-item" :disabled="!design.currentVersion" @click="publishDirect"><Rocket :size="15" />直接发布</button>
+              <button v-else-if="a === 'withdraw'" class="menu-item" @click="withdraw"><Undo2 :size="15" />撤回</button>
+              <button v-else-if="a === 'reviewers'" class="menu-item" @click="openSubmit('reviewers')"><UserPen :size="15" />修改评审人…</button>
+              <button v-else-if="a === 'unpublish'" class="menu-item" @click="unpublish"><RotateCcw :size="15" />改回草稿</button>
+            </template>
           </div>
           <div v-if="statusOpen" class="veil" @click="statusOpen = false" />
         </div>
+        <span v-if="design?.status === 'review' && design.openReview?.reviewers.length" class="reviewers" :title="statusTitle">
+          <span v-for="r in design.openReview.reviewers" :key="r.id" class="rv" :class="{ invalid: !r.valid }" :title="r.valid ? r.displayName : `${r.displayName}（已停用或看不到此项目）`">
+            <Avatar :name="r.displayName" :size="20" />
+          </span>
+        </span>
+        <span v-if="changedSincePublish" class="tag gray" :title="`发布的是 v${design?.approvedVersion}，当前是 v${design?.currentVersion}`">发布后有新改动</span>
       </div>
+      <template v-if="design?.status === 'draft' && canEdit">
+        <button class="sm" :disabled="reviewBusy" @click="openSubmit('submit')"><ClipboardCheck :size="13" />提交评审…</button>
+      </template>
+      <template v-if="design?.status === 'review' && design.canReview">
+        <button class="sm primary" :disabled="reviewBusy || !design.currentVersion" :title="`通过 v${design.currentVersion ?? '—'}，变成已发布`" @click="approve"><Check :size="13" />通过</button>
+        <button class="sm" :disabled="reviewBusy" @click="openReject"><CircleX :size="13" />退回…</button>
+      </template>
 
       <div v-if="versions.length" class="pop-wrap">
         <button class="ghost vbtn" :class="{ on: versionOpen }" @click="versionOpen = !versionOpen">
@@ -647,7 +942,7 @@ onMounted(async () => {
             <button :class="{ active: panel === 'inspect' }" @click="panel = 'inspect'">标注</button>
             <button :class="{ active: panel === 'slices' }" @click="panel = 'slices'">切图</button>
           </template>
-          <button :class="{ active: panel === 'comments' }" @click="panel = 'comments'">评论<span v-if="comments.length" class="pcount">{{ comments.length }}</span></button>
+          <button :class="{ active: panel === 'comments' }" @click="panel = 'comments'">评论<span v-if="unresolved" class="pcount" :title="`${unresolved} 条未解决`">{{ unresolved }}</span></button>
           <button :class="{ active: panel === 'changes' }" @click="panel = 'changes'">变更</button>
         </div>
 
@@ -682,23 +977,62 @@ onMounted(async () => {
             <EmptyState v-else-if="commentsError" :icon="MessageSquare" title="评论加载失败" :hint="commentsError">
               <button class="sm" @click="((commentsError = ''), (commentsLoading = true), loadComments().catch((e) => (commentsError = e.message)).finally(() => (commentsLoading = false)))">重试</button>
             </EmptyState>
-            <EmptyState v-else-if="!comments.length" :icon="MessageSquare" title="还没有评论" hint="对当前画板说点什么，输入 @ 可以提到成员。" />
-            <div v-for="c in comments" :key="c.id" class="comment">
-              <Avatar :name="c.author?.displayName ?? '?'" :size="28" />
-              <div class="cb">
-                <div class="chead">
-                  <span class="cname">{{ c.author?.displayName ?? "已删除的用户" }}</span>
-                  <span class="ctime" :title="formatTime(c.createdAt)">{{ relativeTime(c.createdAt) }}</span>
-                  <span class="spacer" />
-                  <button v-if="c.canDelete" class="ghost sm icon-btn cdel" title="删除评论" @click="removeComment(c)"><Trash2 :size="13" /></button>
-                </div>
-                <div class="ctext"><span v-for="(seg, i) in parts(c.body)" :key="i" :class="{ at: seg.at }">{{ seg.text }}</span></div>
-                <div v-if="c.version || (c.pageId && pageName(c.pageId))" class="cmeta">
-                  <span v-if="c.version" class="chip">v{{ c.version }}</span>
-                  <button v-if="c.pageId && pageName(c.pageId)" class="chip link" @click="go({ v: c.version ?? undefined, board: c.pageId!, mode: 'detail' })"><Hash :size="11" />{{ pageName(c.pageId) }}</button>
-                </div>
+            <template v-else>
+              <div v-if="resolvedCount" class="cfilter">
+                <label class="only"><input v-model="hideResolved" type="checkbox" />隐藏已解决</label>
+                <span class="spacer" />
+                <span class="muted">{{ resolvedCount }} 条已解决</span>
               </div>
-            </div>
+              <EmptyState v-if="!feed.length" :icon="MessageSquare" :title="comments.length ? '没有未解决的评论' : '还没有评论'" :hint="comments.length ? '已解决的评论被隐藏了。' : '对当前画板说点什么，输入 @ 可以提到成员。'" />
+              <template v-for="item in feed" :key="item.key">
+                <!-- 评审事件：一行灰字 -->
+                <div v-if="item.kind === 'event'" class="revent" :class="item.event.type">
+                  <component :is="EVENT_ICON[item.event.type] ?? ClipboardCheck" :size="13" class="eicon" />
+                  <span class="etext">
+                    {{ eventText(item.event) }}
+                    <span class="etime" :title="formatTime(item.event.at)">· {{ relativeTime(item.event.at) }}</span>
+                    <span v-if="item.event.type === 'submit' && item.event.note" class="enote">{{ item.event.note }}</span>
+                  </span>
+                </div>
+                <div v-else class="comment" :class="{ resolved: item.comment.resolved, folded: item.comment.resolved && !expanded.has(item.comment.id) }">
+                  <Avatar :name="item.comment.author?.displayName ?? '?'" :size="28" />
+                  <div class="cb">
+                    <div class="chead">
+                      <span class="cname">{{ item.comment.author?.displayName ?? "已删除的用户" }}</span>
+                      <span class="ctime" :title="formatTime(item.comment.createdAt)">{{ relativeTime(item.comment.createdAt) }}</span>
+                      <span v-if="item.comment.legacy" class="tag gray rtag" title="评审功能上线前已发布设计稿上的评论，已自动标为已解决">上线前的评论</span>
+                      <span
+                        v-else-if="item.comment.resolved"
+                        class="tag green rtag"
+                        :title="item.comment.resolvedBy ? `${item.comment.resolvedBy.displayName} ${formatTime(item.comment.resolvedAt)} 标为已解决` : '已解决'"
+                        >已解决</span
+                      >
+                      <span class="spacer" />
+                      <button
+                        v-if="item.comment.canResolve"
+                        class="ghost sm icon-btn cact"
+                        :title="item.comment.resolved ? '取消解决' : '标为已解决'"
+                        :aria-label="item.comment.resolved ? '取消解决' : '标为已解决'"
+                        @click="setResolved(item.comment, !item.comment.resolved)"
+                      >
+                        <Undo2 v-if="item.comment.resolved" :size="13" /><CircleCheck v-else :size="13" />
+                      </button>
+                      <button v-if="item.comment.canDelete" class="ghost sm icon-btn cact" title="删除评论" @click="removeComment(item.comment)"><Trash2 :size="13" /></button>
+                    </div>
+                    <button v-if="item.comment.resolved && !expanded.has(item.comment.id)" class="ctext cfold" title="展开" @click="expanded.add(item.comment.id)">{{ item.comment.body }}</button>
+                    <div v-else class="ctext"><span v-for="(seg, i) in parts(item.comment.body)" :key="i" :class="{ at: seg.at }">{{ seg.text }}</span></div>
+                    <div v-if="!(item.comment.resolved && !expanded.has(item.comment.id)) && (item.comment.version || (item.comment.pageId && pageName(item.comment.pageId)))" class="cmeta">
+                      <span v-if="item.comment.version" class="chip" :class="{ old: item.comment.version !== design?.currentVersion }" :title="item.comment.version !== design?.currentVersion ? `评论时看的是 v${item.comment.version}，当前是 v${design?.currentVersion ?? '—'}` : ''">
+                        {{ item.comment.version !== design?.currentVersion ? `针对 v${item.comment.version}` : `v${item.comment.version}` }}
+                      </span>
+                      <button v-if="item.comment.pageId && pageName(item.comment.pageId)" class="chip link" @click="go({ v: item.comment.version ?? undefined, board: item.comment.pageId!, mode: 'detail' })">
+                        <Hash :size="11" />{{ pageName(item.comment.pageId) }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </template>
           </div>
           <div class="composer">
             <div v-if="suggestions.length" class="popover suggest">
@@ -752,6 +1086,58 @@ onMounted(async () => {
         </div>
       </aside>
     </div>
+
+    <!-- 提交评审 / 修改评审人 -->
+    <Modal v-if="submitMode" :title="submitMode === 'reviewers' ? '修改评审人' : `提交评审 v${design?.currentVersion ?? '—'}`" :width="480" @close="submitMode = null">
+      <form id="submit-review-form" @submit.prevent="confirmSubmit">
+        <div class="field">
+          <span class="flabel">评审人<span class="muted"> · 可选，可多选</span></span>
+          <div class="search-box rsearch">
+            <Search :size="14" />
+            <input v-model="reviewerQuery" placeholder="搜索成员" @keydown.enter.prevent="pickFirstMatch" />
+          </div>
+          <div class="rlist">
+            <template v-if="candidatesLoading">
+              <div v-for="i in 4" :key="i" class="ritem"><span class="skeleton" style="width: 20px; height: 20px; border-radius: 50%" /><span class="skeleton" style="width: 120px; height: 12px" /></div>
+            </template>
+            <p v-else-if="!shownCandidates.length" class="rnone">没有匹配的成员</p>
+            <template v-else>
+              <label v-for="c in shownCandidates" :key="c.id" class="ritem" :class="{ on: pickedReviewers.includes(c.id) }">
+                <input type="checkbox" :checked="pickedReviewers.includes(c.id)" @change="toggleReviewer(c.id)" />
+                <Avatar :name="c.displayName" :size="20" />
+                <span class="truncate">{{ c.displayName }}</span>
+                <span class="smuted">@{{ c.username }}</span>
+                <span v-if="c.id === session.user?.id" class="smuted">（我）</span>
+              </label>
+            </template>
+          </div>
+          <span class="field-hint">{{ pickedReviewers.length ? `已选 ${pickedReviewers.length} 人，他们会收到通知；只有评审人能通过或退回。` : "不指定时，任一项目编辑者都能通过或退回。" }}</span>
+        </div>
+        <label v-if="submitMode === 'submit'" class="field">
+          <span>说明<span class="muted"> · 可选</span></span>
+          <textarea v-model="submitNote" rows="3" maxlength="2000" placeholder="这一版改了什么、希望重点看哪里" />
+        </label>
+      </form>
+      <template #footer>
+        <button @click="submitMode = null">取消</button>
+        <button class="primary" type="submit" form="submit-review-form" :disabled="reviewBusy">{{ submitMode === "reviewers" ? "保存" : "提交评审" }}</button>
+      </template>
+    </Modal>
+
+    <!-- 退回 -->
+    <Modal v-if="rejecting" :title="`退回 v${design?.currentVersion ?? '—'}`" @close="rejecting = false">
+      <form id="reject-review-form" @submit.prevent="confirmReject">
+        <label class="field">
+          原因
+          <textarea v-model="rejectReason" rows="4" maxlength="2000" placeholder="哪里需要修改" required autofocus />
+          <span class="field-hint">设计稿会变回草稿，提交者会收到通知。</span>
+        </label>
+      </form>
+      <template #footer>
+        <button @click="rejecting = false">取消</button>
+        <button class="primary" type="submit" form="reject-review-form" :disabled="reviewBusy || !rejectReason.trim()">退回</button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -839,7 +1225,25 @@ onMounted(async () => {
 .statusmenu {
   top: calc(100% + 6px);
   left: 0;
-  min-width: 140px;
+  min-width: 160px;
+}
+.reviewers {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding-left: 2px;
+}
+.rv {
+  display: inline-flex;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.rv + .rv {
+  margin-left: -6px;
+}
+.rv.invalid {
+  opacity: 0.4;
+  filter: grayscale(1);
 }
 .vbtn {
   gap: 5px;
@@ -1230,6 +1634,81 @@ onMounted(async () => {
 .comment:last-child {
   border-bottom: none;
 }
+.comment.resolved .cname,
+.comment.resolved .ctext {
+  color: var(--muted);
+}
+.comment.folded {
+  padding: 8px 0;
+}
+.rtag {
+  height: 18px;
+  font-size: 11px;
+}
+.cfold {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+  text-align: left;
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  justify-content: flex-start;
+}
+.cfold:hover:not(:disabled) {
+  background: none;
+  color: var(--text-2);
+}
+.cfilter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0 4px;
+  font-size: 12px;
+}
+/* 评审事件：一行灰字 */
+.revent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 0 10px 7px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.revent:last-child {
+  border-bottom: none;
+}
+.eicon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.revent.approve .eicon,
+.revent.publish_direct .eicon {
+  color: var(--ok);
+}
+.revent.reject .eicon {
+  color: var(--danger);
+}
+.etext {
+  min-width: 0;
+  word-break: break-word;
+}
+.etime {
+  color: var(--faint);
+}
+.enote {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
 .cb {
   flex: 1;
   min-width: 0;
@@ -1247,12 +1726,12 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--muted);
 }
-.cdel {
+.cact {
   opacity: 0;
   color: var(--muted);
 }
-.comment:hover .cdel,
-.cdel:focus-visible {
+.comment:hover .cact,
+.cact:focus-visible {
   opacity: 1;
 }
 .ctext {
@@ -1284,6 +1763,10 @@ onMounted(async () => {
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.chip.old {
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 button.chip:hover:not(:disabled) {
   background: var(--active);
@@ -1320,6 +1803,51 @@ button.chip:hover:not(:disabled) {
 .smuted {
   color: var(--muted);
   font-size: 12px;
+}
+/* 提交评审弹窗 */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-2);
+}
+.rsearch {
+  width: 100%;
+  height: 32px;
+}
+.rlist {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+}
+.ritem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 450;
+  color: var(--text);
+  cursor: pointer;
+}
+.ritem:hover {
+  background: var(--hover);
+}
+.ritem.on {
+  background: var(--brand-soft);
+}
+.rnone {
+  margin: 0;
+  padding: 12px 8px;
+  color: var(--muted);
+  font-weight: 400;
 }
 /* 变更 */
 .csum {

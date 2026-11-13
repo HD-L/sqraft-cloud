@@ -7,7 +7,24 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Bell, ChevronsUpDown, Menu, Clock, Download, FolderKanban, KeyRound, LogOut, ScrollText, Search, Settings, Users, Wrench } from "lucide-vue-next";
+import {
+  Bell,
+  ChevronsUpDown,
+  CircleCheck,
+  ClipboardCheck,
+  Menu,
+  Clock,
+  Download,
+  FolderKanban,
+  KeyRound,
+  LogOut,
+  RefreshCw,
+  ScrollText,
+  Search,
+  Settings,
+  Users,
+  Wrench,
+} from "lucide-vue-next";
 import { api, logout, relativeTime, ROLE_LABEL, session } from "./api";
 import { answerConfirm, confirmState, openClient, ui } from "./ui";
 import Avatar from "./components/Avatar.vue";
@@ -71,6 +88,12 @@ interface Note {
   read: boolean;
   createdAt: number;
 }
+/** 评审类通知在正文上方带一行图标 + 标题，一眼分出是待办还是结果 */
+const NOTE_KIND: Record<string, { icon: typeof Bell; label: string }> = {
+  review_request: { icon: ClipboardCheck, label: "请你评审" },
+  review_result: { icon: CircleCheck, label: "评审结果" },
+  review_updated: { icon: RefreshCw, label: "评审稿有更新" },
+};
 const notes = ref<Note[]>([]);
 const unread = ref(0);
 const bellOpen = ref(false);
@@ -160,7 +183,10 @@ async function signOut() {
             <div v-if="!notes.length" class="nempty"><Bell :size="20" />暂无通知</div>
             <button v-for="n in notes" :key="n.id" class="note" :class="{ unread: !n.read }" @click="openNote(n)">
               <Avatar :name="n.actor?.displayName ?? '系'" :size="26" />
-              <span class="ntext">{{ n.text }}<span class="ntime">{{ relativeTime(n.createdAt) }}</span></span>
+              <span class="ntext">
+                <span v-if="NOTE_KIND[n.kind]" class="nkind" :class="n.kind"><component :is="NOTE_KIND[n.kind].icon" :size="12" />{{ NOTE_KIND[n.kind].label }}</span>
+                {{ n.text }}<span class="ntime">{{ relativeTime(n.createdAt) }}</span>
+              </span>
               <span v-if="!n.read" class="ndot" />
             </button>
           </div>
@@ -459,6 +485,20 @@ nav {
   flex-direction: column;
   gap: 2px;
   line-height: 1.5;
+}
+.nkind {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--brand);
+}
+.nkind.review_result {
+  color: var(--ok);
+}
+.nkind.review_updated {
+  color: var(--muted);
 }
 .ntime {
   font-size: 11.5px;

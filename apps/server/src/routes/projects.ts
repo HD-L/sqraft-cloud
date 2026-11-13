@@ -1,6 +1,7 @@
 /**
  * 项目与设计稿（P3、D3、D5、D6、B1–B2、C2、C4）：列表只返回有权限的；
- * 团队编辑者可新建项目，项目编辑者可改项目信息、建稿、改名、改状态、删除（进回收站）、回滚版本。
+ * 团队编辑者可新建项目，项目编辑者可改项目信息、建稿、改名、删除（进回收站）、回滚版本。
+ * 设计稿状态由评审动作驱动（见 reviews.ts），PATCH status 只做兼容。
  */
 
 import type { FastifyInstance } from "fastify";
@@ -24,6 +25,15 @@ import { badRequest, forbidden, notFound } from "../errors";
 import { nameOf } from "../notify";
 import type { ProjectRow } from "./admin";
 import { summarize, type VersionChanges } from "../changes";
+import {
+  canReviewDesign,
+  followNewVersion,
+  openReviewOf,
+  performReview,
+  personOf,
+  publicOpenReview,
+  type ReviewAction,
+} from "../reviews";
 
 export interface DesignRow {
   id: string;
@@ -35,6 +45,11 @@ export interface DesignRow {
   updated_at: number;
   deleted_at: number | null;
   status: DesignStatus;
+  /** 最近一次通过评审（或直接发布）的版本；上线前已发布的为当时的当前版本 */
+  approved_version: number | null;
+  approved_at: number | null;
+  /** 通过的人；approved_version 非空而它为空 = 上线前已发布 */
+  approved_by: string | null;
 }
 
 /** 设计稿状态（C4）：草稿 / 评审中 / 已发布 */
@@ -92,12 +107,16 @@ export function publicVersion(db: Db, v: VersionRow, current: number | null) {
   };
 }
 
-export function publicDesign(db: Db, d: DesignRow) {
+/** 设计稿的公开信息。传入 viewer 时给出 canReview（当前用户能否通过 / 退回）。 */
+export function publicDesign(db: Db, d: DesignRow, viewer?: Principal | null) {
   const current = d.current_version
     ? (db.prepare("SELECT * FROM versions WHERE design_id = ? AND number = ?").get(d.id, d.current_version) as VersionRow | undefined)
     : undefined;
   const latest = db.prepare("SELECT MAX(number) AS n FROM versions WHERE design_id = ?").get(d.id) as { n: number | null };
-  const comments = db.prepare("SELECT COUNT(*) AS n FROM comments WHERE design_id = ? AND deleted_at IS NULL").get(d.id) as { n: number };
+  const comments = db
+    .prepare("SELECT COUNT(*) AS n, COUNT(CASE WHEN resolved_at IS NULL THEN 1 END) AS open FROM comments WHERE design_id = ? AND deleted_at IS NULL")
+    .get(d.id) as { n: number; open: number };
+  const review = d.status === "review" ? openReviewOf(db, d.id) : undefined;
   return {
     id: d.id,
     projectId: d.project_id,
@@ -108,6 +127,12 @@ export function publicDesign(db: Db, d: DesignRow) {
     pageCount: current?.page_count ?? 0,
     createdBy: userName(db, d.created_by),
     commentCount: comments.n,
+    unresolvedCount: comments.open,
+    approvedVersion: d.approved_version ?? null,
+    approvedAt: d.approved_at ?? null,
+    approvedBy: personOf(db, d.approved_by ?? null),
+    openReview: publicOpenReview(db, d, review),
+    canReview: canReviewDesign(db, viewer, d, review),
     updatedAt: d.updated_at,
     createdAt: d.created_at,
   };
@@ -157,6 +182,13 @@ function projectCard(db: Db, row: ProjectRow, role: string) {
     updatedAt: Math.max(stat.t ?? 0, row.created_at),
     createdAt: row.created_at,
   };
+}
+
+/** 旧接口 PATCH status 的兼容：目标状态 → 评审动作 */
+function statusAction(from: DesignStatus, to: DesignStatus): ReviewAction {
+  if (to === "review") return "submit";
+  if (to === "published") return from === "review" ? "approve" : "publish";
+  return from === "review" ? "withdraw" : "unpublish";
 }
 
 function checkName(name: unknown): string {
@@ -241,7 +273,7 @@ export function projectRoutes(app: FastifyInstance, { db }: AppContext): void {
             .all(req.params.projectId, `%${q}%`)
         : db.prepare("SELECT * FROM designs WHERE project_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC").all(req.params.projectId)
     ) as DesignRow[];
-    return { designs: rows.map((d) => publicDesign(db, d)) };
+    return { designs: rows.map((d) => publicDesign(db, d, p)) };
   });
 
   app.post<{ Params: { projectId: string }; Body: { name?: unknown } }>("/api/v1/projects/:projectId/designs", async (req) => {
@@ -259,12 +291,15 @@ export function projectRoutes(app: FastifyInstance, { db }: AppContext): void {
       updated_at: now,
       deleted_at: null,
       status: "draft",
+      approved_version: null,
+      approved_at: null,
+      approved_by: null,
     };
     db.prepare(
       "INSERT INTO designs (id, project_id, name, status, created_by, created_at, updated_at) VALUES (?, ?, ?, 'draft', ?, ?, ?)",
     ).run(row.id, row.project_id, row.name, row.created_by, now, now);
     audit(db, p, req.ip, { action: "design.create", target: row.id, detail: { projectId: row.project_id, name } });
-    return { design: publicDesign(db, row) };
+    return { design: publicDesign(db, row, p) };
   });
 
   app.get<{ Params: { id: string } }>("/api/v1/designs/:id", async (req) => {
@@ -276,25 +311,27 @@ export function projectRoutes(app: FastifyInstance, { db }: AppContext): void {
         "INSERT INTO recent_views (user_id, design_id, viewed_at) VALUES (?, ?, ?) ON CONFLICT (user_id, design_id) DO UPDATE SET viewed_at = excluded.viewed_at",
       ).run(p.user.id, d.id, Date.now());
     }
-    return { design: publicDesign(db, d) };
+    return { design: publicDesign(db, d, p) };
   });
 
   app.patch<{ Params: { id: string }; Body: { name?: unknown; status?: unknown } }>("/api/v1/designs/:id", async (req) => {
     const p = requireWriter(req);
-    const d = loadDesign(db, p, req.params.id, "editor");
+    const d = loadDesign(db, p, req.params.id, "viewer");
     const { name, status } = req.body ?? {};
     if (name === undefined && status === undefined) throw badRequest("没有要修改的内容");
-    if (name !== undefined) {
-      const n = checkName(name);
+    const n = name === undefined ? undefined : checkName(name);
+    if (n !== undefined) requireProjectRole(db, p, d.project_id, "editor");
+    // 状态只能由评审动作驱动：这里按旧接口的语义换成对应的评审动作（同样只认网页会话、同样留评审记录）
+    if (status !== undefined && status !== d.status) {
+      if (!DESIGN_STATUSES.includes(status as DesignStatus)) throw badRequest("状态只能是 draft（草稿）、review（评审中）或 published（已发布）");
+      const action = statusAction(d.status, status as DesignStatus);
+      performReview(db, p, d.id, { action, version: action === "approve" ? (d.current_version ?? undefined) : undefined }, req.ip);
+    }
+    if (n !== undefined) {
       db.prepare("UPDATE designs SET name = ?, updated_at = ? WHERE id = ?").run(n, Date.now(), d.id);
       audit(db, p, req.ip, { action: "design.rename", target: d.id, detail: { name: n } });
     }
-    if (status !== undefined) {
-      if (!DESIGN_STATUSES.includes(status as DesignStatus)) throw badRequest("状态只能是 draft（草稿）、review（评审中）或 published（已发布）");
-      db.prepare("UPDATE designs SET status = ?, updated_at = ? WHERE id = ?").run(status, Date.now(), d.id);
-      audit(db, p, req.ip, { action: "design.status", target: d.id, detail: { from: d.status, to: status } });
-    }
-    return { design: publicDesign(db, db.prepare("SELECT * FROM designs WHERE id = ?").get(d.id) as DesignRow) };
+    return { design: publicDesign(db, db.prepare("SELECT * FROM designs WHERE id = ?").get(d.id) as DesignRow, p) };
   });
 
   app.delete<{ Params: { id: string } }>("/api/v1/designs/:id", async (req) => {
@@ -321,6 +358,7 @@ export function projectRoutes(app: FastifyInstance, { db }: AppContext): void {
     }
     db.prepare("UPDATE designs SET current_version = ?, updated_at = ? WHERE id = ?").run(version, Date.now(), d.id);
     audit(db, p, req.ip, { action: "design.rollback", target: d.id, detail: { from: d.current_version, to: version } });
-    return { design: publicDesign(db, db.prepare("SELECT * FROM designs WHERE id = ?").get(d.id) as DesignRow) };
+    if (version !== d.current_version) followNewVersion(db, d.id, p.user.id);
+    return { design: publicDesign(db, db.prepare("SELECT * FROM designs WHERE id = ?").get(d.id) as DesignRow, p) };
   });
 }

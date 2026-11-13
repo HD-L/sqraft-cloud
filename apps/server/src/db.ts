@@ -202,6 +202,94 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE users ADD COLUMN project_scope TEXT NOT NULL DEFAULT 'all';
   `,
+  // 设计稿评审：评审轮次、通过的版本、评论「已解决」
+  `
+  CREATE TABLE reviews (
+    id TEXT PRIMARY KEY,
+    design_id TEXT NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    version INTEGER,
+    requested_by TEXT,
+    reviewers TEXT NOT NULL DEFAULT '[]',
+    note TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL CHECK (state IN ('open', 'approved', 'rejected', 'cancelled')),
+    skipped INTEGER NOT NULL DEFAULT 0,
+    prev_status TEXT,
+    decided_by TEXT,
+    decided_note TEXT,
+    by_admin INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    closed_at INTEGER
+  );
+  CREATE UNIQUE INDEX reviews_one_open ON reviews(design_id) WHERE state = 'open';
+  CREATE INDEX reviews_design ON reviews(design_id, created_at);
+
+  ALTER TABLE designs ADD COLUMN approved_version INTEGER;
+  ALTER TABLE designs ADD COLUMN approved_at INTEGER;
+  ALTER TABLE designs ADD COLUMN approved_by TEXT;
+
+  ALTER TABLE comments ADD COLUMN resolved_at INTEGER;
+  ALTER TABLE comments ADD COLUMN resolved_by TEXT;
+  ALTER TABLE comments ADD COLUMN resolved_legacy INTEGER NOT NULL DEFAULT 0;
+
+  -- 上线前已发布的：当前版本视为通过的版本（approved_by 为空 = 上线前已发布）
+  UPDATE designs SET approved_version = current_version WHERE status = 'published' AND current_version IS NOT NULL;
+  -- 上线前就在评审中的：补一轮进行中的评审（不指定评审人）
+  INSERT INTO reviews (id, design_id, version, requested_by, reviewers, note, state, skipped, prev_status, by_admin, created_at)
+    SELECT lower(hex(randomblob(12))), id, current_version, created_by, '[]', '', 'open', 0, 'draft', 0, updated_at
+    FROM designs WHERE status = 'review';
+  -- 已发布设计稿上的旧评论一律视为已解决（显示为「上线前的评论」）
+  UPDATE comments SET resolved_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000, resolved_legacy = 1
+    WHERE deleted_at IS NULL AND design_id IN (SELECT id FROM designs WHERE status = 'published');
+  `,
+  // 评审时间线单独存一张表：审计会按保留期清理，不能当时间线的数据源。
+  // 每个评审动作一行；version 是动作发生时的版本（提交事件记提交时的版本），reviewers 是当时的评审人名单
+  `
+  CREATE TABLE review_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    design_id TEXT NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
+    review_id TEXT,
+    type TEXT NOT NULL CHECK (type IN ('submit', 'approve', 'reject', 'withdraw', 'publish_direct', 'unpublish', 'reviewers')),
+    actor_id TEXT,
+    version INTEGER,
+    reviewers TEXT,
+    note TEXT,
+    by_admin INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX review_events_design ON review_events(design_id, created_at, id);
+
+  -- 补已有的记录：评审轮次来自 reviews，提交时的版本 / 评审人、改回草稿、修改评审人尽量从审计里找回
+  INSERT INTO review_events (design_id, review_id, type, actor_id, version, reviewers, note, by_admin, created_at)
+  SELECT design_id, review_id, type, actor_id, version, reviewers, note, by_admin, at FROM (
+    SELECT r.design_id, r.id AS review_id, 'submit' AS type, r.requested_by AS actor_id,
+      COALESCE(
+        (SELECT json_extract(a.detail, '$.version') FROM audit a
+          WHERE a.target = r.design_id AND a.action = 'review.submit' AND a.result = 'ok' AND json_valid(a.detail) AND json_extract(a.detail, '$.review') = r.id),
+        r.version) AS version,
+      COALESCE(
+        (SELECT json_extract(a.detail, '$.reviewers') FROM audit a
+          WHERE a.target = r.design_id AND a.action = 'review.submit' AND a.result = 'ok' AND json_valid(a.detail) AND json_extract(a.detail, '$.review') = r.id),
+        r.reviewers) AS reviewers,
+      NULLIF(r.note, '') AS note, 0 AS by_admin, r.created_at AS at,
+      (SELECT a.id FROM audit a WHERE a.target = r.design_id AND a.action = 'review.submit' AND json_valid(a.detail) AND json_extract(a.detail, '$.review') = r.id) AS seq
+    FROM reviews r WHERE r.skipped = 0
+    UNION ALL
+    SELECT r.design_id, r.id, 'publish_direct', r.requested_by, r.version, NULL, NULLIF(r.note, ''), 0, r.created_at,
+      (SELECT a.id FROM audit a WHERE a.target = r.design_id AND a.action = 'review.publish_direct' AND json_valid(a.detail) AND json_extract(a.detail, '$.review') = r.id)
+    FROM reviews r WHERE r.skipped = 1
+    UNION ALL
+    SELECT r.design_id, r.id, CASE r.state WHEN 'approved' THEN 'approve' WHEN 'rejected' THEN 'reject' ELSE 'withdraw' END,
+      r.decided_by, r.version, NULL, r.decided_note, r.by_admin, r.closed_at,
+      (SELECT a.id FROM audit a WHERE a.target = r.design_id AND a.action IN ('review.approve', 'review.reject', 'review.withdraw') AND json_valid(a.detail) AND json_extract(a.detail, '$.review') = r.id)
+    FROM reviews r WHERE r.skipped = 0 AND r.state <> 'open' AND r.closed_at IS NOT NULL
+    UNION ALL
+    SELECT a.target, NULL, 'unpublish', a.user_id, json_extract(a.detail, '$.version'), NULL, NULL, 0, a.at, a.id
+    FROM audit a WHERE a.action = 'review.unpublish' AND a.result = 'ok' AND json_valid(a.detail) AND a.target IN (SELECT id FROM designs)
+    UNION ALL
+    SELECT a.target, json_extract(a.detail, '$.review'), 'reviewers', a.user_id, NULL, COALESCE(json_extract(a.detail, '$.reviewers'), '[]'), NULL, 0, a.at, a.id
+    FROM audit a WHERE a.action = 'review.reviewers' AND a.result = 'ok' AND json_valid(a.detail) AND a.target IN (SELECT id FROM designs)
+  ) ORDER BY at, COALESCE(seq, 9007199254740991);
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

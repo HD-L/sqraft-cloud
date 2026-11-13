@@ -36,7 +36,7 @@ export const TOOLS: ToolInfo[] = [
   {
     name: "list_designs",
     description:
-      "列出设计稿（id、名称、状态 draft 草稿 / review 评审中 / published 已发布、当前版本、页面数、更新时间）。可按项目筛选、按名称搜索。" +
+      "列出设计稿（id、名称、状态 draft 草稿 / review 评审中 / published 已发布、当前版本、通过评审的版本 approvedVersion、页面数、更新时间）。可按项目筛选、按名称搜索。" +
       "开发时优先用已发布的稿子；拿到设计稿 id 后用 list_pages 看页面。",
     inputSchema: {
       type: "object",
@@ -348,6 +348,8 @@ export class McpTools {
               projectId: d.project_id,
               projectName: d.project_name,
               currentVersion: d.current_version,
+              /** 最近一次通过评审（或直接发布）的版本；与 currentVersion 不同说明发布后又有改动 */
+              approvedVersion: d.approved_version ?? null,
               pageCount: v?.page_count ?? 0,
               updatedAt: new Date(d.updated_at).toISOString(),
             };

@@ -3,7 +3,8 @@
  *
  * - 内容和当前版本完全一致（内容指纹或文件哈希相同）就不生成新版本；
  * - 以当前版本为基准，给索引条目标上 changedIn、算出页面级变更，一起写进版本记录；
- * - 计算期间有人抢先发布了新版本时，以新的当前版本为基准重算（最多几次）。
+ * - 计算期间有人抢先发布了新版本时，以新的当前版本为基准重算（最多几次）；
+ * - 评审中的设计稿有了新版本：本轮评审跟到新版本（状态不变），通知评审人。
  */
 
 import type { AppContext } from "./app";
@@ -13,6 +14,7 @@ import type { VersionIndex } from "./indexer";
 import type { DesignReader } from "./reader";
 import type { AssetRef } from "./sqraft-file";
 import type { DesignRow, VersionRow } from "./routes/projects";
+import { followNewVersion } from "./reviews";
 
 export interface VersionPayload {
   note: string;
@@ -85,7 +87,11 @@ export async function commitVersion(ctx: AppContext, reader: DesignReader, uploa
       db.prepare("UPDATE designs SET current_version = ?, updated_at = ? WHERE id = ?").run(next, at, d.id);
       return { design: { ...d, current_version: next, updated_at: at }, version, duplicate: false, changes };
     })();
-    if (outcome) return outcome;
+    if (outcome) {
+      // 评审中的设计稿：本轮评审跟到新版本并通知评审人（重复上传在上面就返回了，不会走到这里）
+      followNewVersion(db, designId, uploaderId);
+      return outcome;
+    }
   }
   throw conflict("同时有其他人在发布这个设计稿的新版本，请稍后重试", "busy");
 }

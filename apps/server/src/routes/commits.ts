@@ -211,7 +211,7 @@ export function commitRoutes(app: FastifyInstance, ctx: AppContext, reader: Desi
         const pageIds = (await reader.index(current)).pages.map((pg) => pg.id);
         const early = versionFingerprint({ ...manifest, sections: normalizeSections(manifest.sections, pageIds) });
         if (current.content_hash === early) {
-          return { design: publicDesign(db, design), version: publicVersion(db, current, design.current_version), duplicate: true };
+          return { design: publicDesign(db, design, p), version: publicVersion(db, current, design.current_version), duplicate: true };
         }
       }
       let assetBytes = 0;
@@ -246,7 +246,7 @@ export function commitRoutes(app: FastifyInstance, ctx: AppContext, reader: Desi
         detail: { mode: "incremental", version: outcome.version.number, size: built.partBytes + assetBytes, duplicate: outcome.duplicate },
       });
       return {
-        design: publicDesign(db, outcome.design),
+        design: publicDesign(db, outcome.design, p),
         version: publicVersion(db, outcome.version, outcome.design.current_version),
         duplicate: outcome.duplicate,
       };

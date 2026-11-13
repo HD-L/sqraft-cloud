@@ -197,7 +197,7 @@ export function uploadRoutes(app: FastifyInstance, ctx: AppContext, reader: Desi
       detail: { version: outcome.version.number, size: result.size, duplicate: outcome.duplicate },
     });
     return {
-      design: publicDesign(db, outcome.design),
+      design: publicDesign(db, outcome.design, p),
       version: publicVersion(db, outcome.version, outcome.design.current_version),
       duplicate: outcome.duplicate,
     };

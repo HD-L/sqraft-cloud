@@ -220,7 +220,7 @@ export function memberRoutes(app: FastifyInstance, { db, config }: AppContext): 
     const designs = rows
       .filter((d) => projectRole(db, p, d.project_id))
       .slice(0, 30)
-      .map((d) => ({ ...publicDesign(db, d), projectName: d.project_name, viewedAt: d.viewed_at }));
+      .map((d) => ({ ...publicDesign(db, d, p), projectName: d.project_name, viewedAt: d.viewed_at }));
     return { designs };
   });
 
@@ -252,7 +252,7 @@ export function memberRoutes(app: FastifyInstance, { db, config }: AppContext): 
     )
       .filter((d) => projectRole(db, p, d.project_id))
       .slice(0, 10)
-      .map((d) => ({ ...publicDesign(db, d), projectName: d.project_name }));
+      .map((d) => ({ ...publicDesign(db, d, p), projectName: d.project_name }));
     const members = (
       db
         .prepare("SELECT * FROM users WHERE disabled_at IS NULL AND (username LIKE ? ESCAPE '\\' OR display_name LIKE ? ESCAPE '\\') LIMIT 10")
